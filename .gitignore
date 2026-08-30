@@ -3,9 +3,11 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+.venv/
 KerkSlidesEnv/
 __pycache__/
 *.pyc
+.streamlit/secrets.toml
 
 # C extensions
 *.so
