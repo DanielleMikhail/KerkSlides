@@ -2,10 +2,10 @@ import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import gspread
-from streamlit_sortables import sort_items
 from pypdf import PdfWriter, PdfReader
 from io import BytesIO
 import base64
+import streamlit.components.v1 as components
 
 
 # ============================================================
@@ -15,7 +15,8 @@ import base64
 st.set_page_config(
     page_title="KerkSlides",
     page_icon="📄",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 st.title("📄 KerkSlides")
@@ -25,23 +26,6 @@ st.title("📄 KerkSlides")
 # CONFIGURATION
 # ============================================================
 
-# IMPORTANT:
-# Replace this with the ID of your Google Drive folder.
-#
-# Example:
-# https://drive.google.com/drive/folders/ABC123XYZ
-#
-# Folder ID = ABC123XYZ
-
-FOLDER_ID = "YOUR_ACTUAL_FOLDER_ID"
-
-
-# Replace this with your Google Sheets Spreadsheet ID.
-#
-# Example:
-# https://docs.google.com/spreadsheets/d/ABC123XYZ/edit
-#
-# Spreadsheet ID = ABC123XYZ
 
 FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
 SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
@@ -84,82 +68,36 @@ sheet = gc.open_by_key(
 
 
 # ============================================================
-# GET GOOGLE DOCS FROM DRIVE
+# GET GOOGLE DOCS
 # ============================================================
 
 results = drive_service.files().list(
     q=f"'{FOLDER_ID}' in parents "
       f"and mimeType='application/vnd.google-apps.document' "
       f"and trashed=false",
-    fields="files(id, name)"
+    fields="files(id,name)"
 ).execute()
 
 google_docs = results.get("files", [])
 
 
 # ============================================================
-# MAKE SURE GOOGLE SHEET HAS ALL DOCUMENTS
-# ============================================================
-
-existing_rows = sheet.get_all_records()
-
-existing_ids = {
-    str(row["document_id"])
-    for row in existing_rows
-    if row.get("document_id")
-}
-
-
-for file in google_docs:
-
-    if file["id"] not in existing_ids:
-
-        sheet.append_row([
-            file["id"],
-            file["name"],
-            "FALSE"
-        ])
-
-
-# ============================================================
-# READ SHARED SELECTION
-# ============================================================
-
-shared_rows = sheet.get_all_records()
-
-shared_selection = {
-    str(row["document_id"]):
-        str(row["selected"]).upper() == "TRUE"
-    for row in shared_rows
-}
-
-
-# ============================================================
-# READ SHARED ORDER
-# ============================================================
-
-shared_order = [
-    str(row["document_id"])
-    for row in shared_rows
-    if row.get("document_id")
-]
-
-
-# ============================================================
 # TABS
 # ============================================================
 
-tab1, tab2 = st.tabs([
-    "📁 Select documents",
-    "👀 Preview"
-])
+tab_select, tab_preview = st.tabs(
+    [
+        "📁 Select documents",
+        "👀 Preview"
+    ]
+)
 
 
 # ============================================================
-# TAB 1
+# TAB 1 — SELECT DOCUMENTS
 # ============================================================
 
-with tab1:
+with tab_select:
 
     st.header("Select documents")
 
@@ -177,10 +115,25 @@ with tab1:
 
 
         # ----------------------------------------------------
-        # CURRENT SHARED SELECTION
+        # READ CURRENT SHARED SELECTION
         # ----------------------------------------------------
 
+        shared_rows = sheet.get_all_records()
+
+        shared_selection = {
+            str(row["document_id"]):
+                str(row["selected"]).upper() == "TRUE"
+            for row in shared_rows
+            if row.get("document_id")
+        }
+
+
         current_selection = []
+
+
+        # ----------------------------------------------------
+        # CHECKBOXES
+        # ----------------------------------------------------
 
         for file in google_docs:
 
@@ -201,7 +154,7 @@ with tab1:
 
 
         # ----------------------------------------------------
-        # UPDATE SHARED SELECTION
+        # SAVE SHARED SELECTION
         # ----------------------------------------------------
 
         st.divider()
@@ -212,25 +165,38 @@ with tab1:
             use_container_width=True
         ):
 
+            rows = sheet.get_all_records()
+
+            row_by_id = {
+                str(row["document_id"]):
+                    index + 2
+                for index, row
+                in enumerate(rows)
+                if row.get("document_id")
+            }
+
+
             for file in google_docs:
 
-                selected = (
-                    file["id"]
-                    in current_selection
-                )
-
-                # Find document row
-                cell = sheet.find(
+                row_number = row_by_id.get(
                     file["id"]
                 )
 
-                sheet.update_cell(
-                    cell.row,
-                    3,
-                    "TRUE"
-                    if selected
-                    else "FALSE"
-                )
+                if row_number:
+
+                    selected_value = (
+                        "TRUE"
+                        if file["id"]
+                        in current_selection
+                        else "FALSE"
+                    )
+
+                    sheet.update_cell(
+                        row_number,
+                        3,
+                        selected_value
+                    )
+
 
             st.success(
                 "Shared selection updated! ✅"
@@ -239,181 +205,17 @@ with tab1:
             st.rerun()
 
 
-        # ----------------------------------------------------
-        # SELECTED DOCUMENTS
-        # ----------------------------------------------------
-
-        selected_files = [
-            file
-            for file in google_docs
-            if file["id"]
-            in current_selection
-        ]
-
-
-        if selected_files:
-
-            st.divider()
-
-            st.subheader(
-                "Document order"
-            )
-
-            st.write(
-                "Drag the documents to "
-                "change their order."
-            )
-
-
-            # ------------------------------------------------
-            # INITIAL ORDER
-            # ------------------------------------------------
-
-            selected_ids = [
-                file["id"]
-                for file in selected_files
-            ]
-
-
-            # Keep existing shared order
-            # where possible
-
-            ordered_ids = [
-                doc_id
-                for doc_id in shared_order
-                if doc_id in selected_ids
-            ]
-
-
-            # Add newly selected documents
-            # at the end
-
-            for doc_id in selected_ids:
-
-                if doc_id not in ordered_ids:
-
-                    ordered_ids.append(
-                        doc_id
-                    )
-
-
-            id_to_name = {
-                file["id"]: file["name"]
-                for file in selected_files
-            }
-
-
-            ordered_names = [
-                id_to_name[doc_id]
-                for doc_id in ordered_ids
-            ]
-
-
-            # ------------------------------------------------
-            # DRAG & DROP
-            # ------------------------------------------------
-
-            new_order_names = sort_items(
-                ordered_names
-            )
-
-
-            # Convert names back to IDs
-
-            name_to_id = {
-                file["name"]: file["id"]
-                for file in selected_files
-            }
-
-
-            new_order_ids = [
-                name_to_id[name]
-                for name in new_order_names
-            ]
-
-
-            # ------------------------------------------------
-            # SAVE ORDER
-            # ------------------------------------------------
-
-            if st.button(
-                "💾 Save document order",
-                use_container_width=True
-            ):
-
-                # Read all rows again
-                rows = sheet.get_all_records()
-
-                # Create mapping
-                row_by_id = {
-                    str(row["document_id"]):
-                        index + 2
-                    for index, row
-                    in enumerate(rows)
-                }
-
-
-                # We use column 4 for order
-                #
-                # If your sheet currently only has
-                # 3 columns, this will create column D.
-
-                for position, doc_id in enumerate(
-                    new_order_ids,
-                    start=1
-                ):
-
-                    row_number = row_by_id.get(
-                        doc_id
-                    )
-
-                    if row_number:
-
-                        sheet.update_cell(
-                            row_number,
-                            4,
-                            position
-                        )
-
-
-                st.success(
-                    "Document order saved! ✅"
-                )
-
-                st.rerun()
-
-
-            # ------------------------------------------------
-            # SHOW ORDER
-            # ------------------------------------------------
-
-            st.write(
-                "### Current order"
-            )
-
-            for i, name in enumerate(
-                new_order_names,
-                start=1
-            ):
-
-                st.write(
-                    f"**{i}.** 📄 {name}"
-                )
-
-
 # ============================================================
 # TAB 2 — PREVIEW
 # ============================================================
 
-with tab2:
+with tab_preview:
 
-    st.header(
-        "👀 Combined document"
-    )
+    st.header("👀 Combined document")
 
 
     # --------------------------------------------------------
-    # GET CURRENT SHARED DATA AGAIN
+    # READ SHARED SELECTION
     # --------------------------------------------------------
 
     shared_rows = sheet.get_all_records()
@@ -423,68 +225,23 @@ with tab2:
         str(row["document_id"]):
             str(row["selected"]).upper() == "TRUE"
         for row in shared_rows
+        if row.get("document_id")
     }
 
 
-    shared_order_data = []
-
-    for row in shared_rows:
-
-        if row.get("selected"):
-
-            try:
-
-                order = int(
-                    row.get(
-                        "order",
-                        999999
-                    )
-                )
-
-            except:
-
-                order = 999999
-
-
-            shared_order_data.append(
-                (
-                    order,
-                    str(row["document_id"])
-                )
-            )
-
-
-    # Sort by order
-
-    shared_order_data.sort(
-        key=lambda x: x[0]
-    )
-
-
-    selected_ids = [
-        doc_id
-        for _, doc_id
-        in shared_order_data
-        if shared_selection.get(
-            doc_id,
-            False
-        )
-    ]
-
-
     # --------------------------------------------------------
-    # GET FILES
+    # SELECTED DOCUMENTS
     # --------------------------------------------------------
 
     selected_files = [
         file
         for file in google_docs
-        if file["id"] in selected_ids
+        if shared_selection.get(
+            file["id"],
+            False
+        )
     ]
 
-
-    # If there is no saved order yet,
-    # use Drive order.
 
     if not selected_files:
 
@@ -492,17 +249,18 @@ with tab2:
             "No documents have been selected yet."
         )
 
+
     else:
 
         st.write(
             f"**{len(selected_files)} documents** "
-            "in the shared compilation."
+            "selected."
         )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # CREATE COMBINED PDF
-        # ----------------------------------------------------
+        # ====================================================
 
         pdf_writer = PdfWriter()
 
@@ -534,7 +292,7 @@ with tab2:
 
 
         # ----------------------------------------------------
-        # WRITE PDF
+        # CREATE PDF BYTES
         # ----------------------------------------------------
 
         combined_pdf = BytesIO()
@@ -545,17 +303,15 @@ with tab2:
 
         combined_pdf.seek(0)
 
-        pdf_bytes = (
-            combined_pdf.getvalue()
-        )
+        pdf_bytes = combined_pdf.getvalue()
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # DOWNLOAD
-        # ----------------------------------------------------
+        # ====================================================
 
         st.download_button(
-            label="⬇️ Download combined PDF",
+            "⬇️ Download combined PDF",
             data=pdf_bytes,
             file_name="KerkSlides_Compiled.pdf",
             mime="application/pdf",
@@ -566,29 +322,23 @@ with tab2:
         st.divider()
 
 
-        # ====================================================
-        # PDF VIEWER
-        # ====================================================
-
         st.subheader(
             "📖 Document preview"
         )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # BASE64
-        # ----------------------------------------------------
+        # ====================================================
 
         pdf_base64 = base64.b64encode(
             pdf_bytes
-        ).decode(
-            "utf-8"
-        )
+        ).decode("utf-8")
 
 
-        # ----------------------------------------------------
-        # CUSTOM PDF VIEWER
-        # ----------------------------------------------------
+        # ====================================================
+        # MOBILE FRIENDLY PDF VIEWER
+        # ====================================================
 
         viewer_html = f"""
 
@@ -598,7 +348,12 @@ with tab2:
 
 <head>
 
-<meta charset="UTF-8">
+<meta name="viewport"
+      content="width=device-width,
+               initial-scale=1.0,
+               maximum-scale=1.0,
+               user-scalable=yes">
+
 
 <script src="
 https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
@@ -608,36 +363,67 @@ https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
 
 <style>
 
+/* ========================================================
+   BASIC
+======================================================== */
+
 * {{
     box-sizing: border-box;
 }}
 
 
+html,
 body {{
+
     margin: 0;
+
     padding: 0;
-    font-family: Arial, sans-serif;
+
+    width: 100%;
+
+    height: 100%;
+
+    overflow: hidden;
+
+    background: #525659;
+
 }}
 
 
+/* ========================================================
+   VIEWER
+======================================================== */
+
 #viewer {{
+
     width: 100%;
-    height: 900px;
+
+    height: 100vh;
+
+    height: 100dvh;
+
     background: #525659;
 
     display: flex;
+
     flex-direction: column;
 
-    overflow: hidden;
+    position: relative;
+
 }}
 
 
+/* ========================================================
+   TOOLBAR
+======================================================== */
+
 #toolbar {{
 
-    height: 55px;
-    min-height: 55px;
+    height: 52px;
 
-    background: #2f3133;
+    min-height: 52px;
+
+    background: #292b2d;
 
     display: flex;
 
@@ -645,32 +431,38 @@ body {{
 
     justify-content: center;
 
-    gap: 8px;
+    gap: 6px;
 
-    padding: 8px;
+    padding: 6px;
 
-    z-index: 10;
+    z-index: 20;
+
 }}
 
 
 button {{
 
-    background: white;
-
     border: none;
 
     border-radius: 6px;
 
-    padding: 8px 13px;
+    background: white;
+
+    padding: 8px 12px;
 
     font-size: 15px;
 
     cursor: pointer;
+
+    white-space: nowrap;
+
 }}
 
 
-button:hover {{
-    background: #eeeeee;
+button:active {{
+
+    transform: scale(0.95);
+
 }}
 
 
@@ -678,11 +470,16 @@ button:hover {{
 
     color: white;
 
-    margin: 0 10px;
-
     font-size: 14px;
+
+    margin: 0 5px;
+
 }}
 
+
+/* ========================================================
+   PDF AREA
+======================================================== */
 
 #pdf-container {{
 
@@ -692,23 +489,101 @@ button:hover {{
 
     overflow-x: auto;
 
-    padding: 25px;
+    -webkit-overflow-scrolling: touch;
+
+    padding: 15px 8px 40px 8px;
 
     text-align: center;
+
 }}
 
+
+/* ========================================================
+   PDF PAGES
+======================================================== */
 
 .page {{
 
     display: block;
 
-    margin: 0 auto 25px auto;
+    margin: 0 auto 18px auto;
+
+    background: white;
 
     box-shadow:
         0 2px 10px
         rgba(0,0,0,0.4);
 
-    background: white;
+    max-width: none;
+
+}}
+
+
+/* ========================================================
+   MOBILE
+======================================================== */
+
+@media (max-width: 600px) {{
+
+    #toolbar {{
+
+        height: 48px;
+
+        min-height: 48px;
+
+        gap: 4px;
+
+        padding: 4px;
+
+    }}
+
+
+    button {{
+
+        padding: 7px 9px;
+
+        font-size: 13px;
+
+    }}
+
+
+    #page-info {{
+
+        font-size: 12px;
+
+        margin: 0 3px;
+
+    }}
+
+
+    #pdf-container {{
+
+        padding: 8px 3px 30px 3px;
+
+    }}
+
+}}
+
+
+/* ========================================================
+   FULLSCREEN MODE
+======================================================== */
+
+#viewer:fullscreen {{
+
+    width: 100vw;
+
+    height: 100vh;
+
+}}
+
+
+#viewer:-webkit-full-screen {{
+
+    width: 100vw;
+
+    height: 100vh;
+
 }}
 
 
@@ -721,6 +596,11 @@ button:hover {{
 
 
 <div id="viewer">
+
+
+    <!-- ================================================
+         TOOLBAR
+    ================================================= -->
 
 
     <div id="toolbar">
@@ -737,7 +617,7 @@ button:hover {{
 
 
         <button onclick="resetZoom()">
-            Reset
+            100%
         </button>
 
 
@@ -747,11 +627,16 @@ button:hover {{
 
 
         <button onclick="goFullscreen()">
-            ⛶ Full screen
+            ⛶
         </button>
 
 
     </div>
+
+
+    <!-- ================================================
+         PDF
+    ================================================= -->
 
 
     <div id="pdf-container">
@@ -759,11 +644,13 @@ button:hover {{
         <div
             style="
                 color:white;
-                font-size:18px;
-                padding-top:40px;
+                padding:30px;
+                font-size:16px;
             "
         >
+
             Loading document...
+
         </div>
 
     </div>
@@ -775,58 +662,80 @@ button:hover {{
 <script>
 
 
+/* ========================================================
+   PDF DATA
+======================================================== */
+
 const pdfData =
     atob("{pdf_base64}");
 
 
 let pdfDoc = null;
 
-let scale = 1.2;
+let scale = 1.0;
 
 let rendering = false;
 
 
-/* =========================================================
+/* ========================================================
    LOAD PDF
-========================================================= */
-
+======================================================== */
 
 async function loadPDF() {{
 
-    const loadingTask =
-        pdfjsLib.getDocument({{
-            data: Uint8Array.from(
-                pdfData,
-                c => c.charCodeAt(0)
-            )
-        }});
+    try {{
+
+        const loadingTask =
+            pdfjsLib.getDocument({{
+                data: Uint8Array.from(
+                    pdfData,
+                    c => c.charCodeAt(0)
+                )
+            }});
 
 
-    pdfDoc =
-        await loadingTask.promise;
+        pdfDoc =
+            await loadingTask.promise;
 
 
-    document.getElementById(
-        "page-info"
-    ).innerText =
-        pdfDoc.numPages +
-        " pages";
+        document.getElementById(
+            "page-info"
+        ).innerText =
+            pdfDoc.numPages +
+            " pages";
 
 
-    renderAllPages();
+        renderAllPages();
+
+
+    }} catch (error) {{
+
+        document.getElementById(
+            "page-info"
+        ).innerText =
+            "Error loading PDF";
+
+
+        console.error(error);
+
+    }}
 
 }}
 
 
-/* =========================================================
-   RENDER
-========================================================= */
-
+/* ========================================================
+   RENDER ALL PAGES
+======================================================== */
 
 async function renderAllPages() {{
 
-    if (rendering) {{
+    if (
+        rendering ||
+        !pdfDoc
+    ) {{
+
         return;
+
     }}
 
 
@@ -907,10 +816,9 @@ async function renderAllPages() {{
 }}
 
 
-/* =========================================================
-   ZOOM IN
-========================================================= */
-
+/* ========================================================
+   ZOOM
+======================================================== */
 
 function zoomIn() {{
 
@@ -919,11 +827,6 @@ function zoomIn() {{
     renderAllPages();
 
 }}
-
-
-/* =========================================================
-   ZOOM OUT
-========================================================= */
 
 
 function zoomOut() {{
@@ -939,24 +842,18 @@ function zoomOut() {{
 }}
 
 
-/* =========================================================
-   RESET
-========================================================= */
-
-
 function resetZoom() {{
 
-    scale = 1.2;
+    scale = 1.0;
 
     renderAllPages();
 
 }}
 
 
-/* =========================================================
+/* ========================================================
    FULLSCREEN
-========================================================= */
-
+======================================================== */
 
 function goFullscreen() {{
 
@@ -966,41 +863,72 @@ function goFullscreen() {{
         );
 
 
+    /* Already fullscreen */
+
     if (
-        document.fullscreenElement
+        document.fullscreenElement ||
+        document.webkitFullscreenElement
     ) {{
 
-        document.exitFullscreen();
-
-    }}
-
-    else {{
-
         if (
-            viewer.requestFullscreen
+            document.exitFullscreen
         ) {{
 
-            viewer.requestFullscreen();
+            document.exitFullscreen();
 
         }}
 
         else if (
-            viewer.webkitRequestFullscreen
+            document.webkitExitFullscreen
         ) {{
 
-            viewer.webkitRequestFullscreen();
+            document.webkitExitFullscreen();
 
         }}
 
+        return;
+
     }}
+
+
+    /* Desktop Chrome */
+
+    if (
+        viewer.requestFullscreen
+    ) {{
+
+        viewer.requestFullscreen();
+
+        return;
+
+    }}
+
+
+    /* Safari */
+
+    if (
+        viewer.webkitRequestFullscreen
+    ) {{
+
+        viewer.webkitRequestFullscreen();
+
+        return;
+
+    }}
+
+
+    /* iPhone/iPad fallback */
+
+    document.body.classList.add(
+        "mobile-fullscreen"
+    );
 
 }}
 
 
-/* =========================================================
+/* ========================================================
    START
-========================================================= */
-
+======================================================== */
 
 loadPDF();
 
@@ -1015,9 +943,13 @@ loadPDF();
 """
 
 
-        st.components.v1.html(
+        # ====================================================
+        # DISPLAY VIEWER
+        # ====================================================
+
+        components.html(
             viewer_html,
-            height=920,
+            height=750,
             scrolling=False
         )
 
