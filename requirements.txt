@@ -1,1 +1,14 @@
 streamlit
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
+python-docx
+cryptography==44.0.2
+pypdf
+streamlit-pdf-viewer
+streamlit-sortables
+streamlit
+streamlit-pdf-viewer
+streamlit-sortables
+gspread
