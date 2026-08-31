@@ -32,13 +32,13 @@ SOURCE_FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
 
 # Google Sheet containing:
 # document_id | document_name | selected
-SPREADSHEET_ID = "XX"
+SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
 
 # Folder in which the compiled PDF will be saved
 #
 # You can use the same folder as SOURCE_FOLDER_ID or create
 # a separate folder called, for example, KerkSlides_Output.
-OUTPUT_FOLDER_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
+OUTPUT_FOLDER_ID = "1-gSEGSv3aawp1JQ9ou7gy50ihPGCc0N3"
 
 OUTPUT_FILE_NAME = "KerkSlides_Compiled.pdf"
 
