@@ -454,27 +454,26 @@ with tab_preview:
             "📖 Document preview"
         )
 
-        st.caption(
-            "On iPhone or iPad, use the button below to open "
-            "the document in a separate full-page Safari tab."
-        )
+        st.subheader(
+    "📖 Document preview"
+)
 
-        # ----------------------------------------------------
-        # CONVERT PDF TO BASE64
-        # ----------------------------------------------------
+# ----------------------------------------------------
+# CONVERT PDF TO BASE64
+# ----------------------------------------------------
 
-        pdf_base64 = base64.b64encode(
-            pdf_bytes
-        ).decode("utf-8")
+pdf_base64 = base64.b64encode(
+    pdf_bytes
+).decode("utf-8")
 
-        # ----------------------------------------------------
-        # STANDALONE PDF VIEWER
-        # ----------------------------------------------------
 
-        preview_html = f"""
+# ----------------------------------------------------
+# PDF.JS VIEWER
+# ----------------------------------------------------
+
+viewer_html = f"""
 <!DOCTYPE html>
-
-<html>
+<html lang="en">
 
 <head>
 
@@ -483,9 +482,13 @@ with tab_preview:
         content="
             width=device-width,
             initial-scale=1.0,
+            maximum-scale=5.0,
+            user-scalable=yes,
             viewport-fit=cover
         "
     >
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <style>
 
@@ -508,74 +511,122 @@ with tab_preview:
                 sans-serif;
         }}
 
-        #viewer-container {{
-            display: flex;
-            flex-direction: column;
+        #viewer {{
+            position: fixed;
+            inset: 0;
             width: 100%;
             height: 100vh;
             height: 100dvh;
+            display: flex;
+            flex-direction: column;
             background: #525659;
         }}
 
         #toolbar {{
+            flex: 0 0 auto;
+            min-height: 54px;
             display: flex;
             align-items: center;
             justify-content: center;
-            min-height: 58px;
+            gap: 6px;
             padding:
-                max(8px, env(safe-area-inset-top))
-                max(10px, env(safe-area-inset-right))
-                8px
-                max(10px, env(safe-area-inset-left));
-            background: #242629;
+                max(6px, env(safe-area-inset-top))
+                max(8px, env(safe-area-inset-right))
+                6px
+                max(8px, env(safe-area-inset-left));
+            background: #292b2d;
+            z-index: 10;
         }}
 
-        #open-button {{
-            width: 100%;
-            max-width: 520px;
-            min-height: 42px;
+        button {{
+            min-width: 42px;
+            min-height: 38px;
             border: none;
             border-radius: 8px;
-            padding: 10px 18px;
-            background: #ffffff;
-            color: #1f1f1f;
-            font-size: 16px;
+            padding: 8px 11px;
+            background: white;
+            color: #202124;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
+            touch-action: manipulation;
         }}
 
-        #open-button:active {{
-            transform: scale(0.98);
-            background: #eeeeee;
+        button:active {{
+            transform: scale(0.96);
         }}
 
-        #pdf-frame {{
-            flex: 1;
-            display: block;
-            width: 100%;
-            height: 100%;
-            border: none;
-            background: #525659;
+        button:disabled {{
+            opacity: 0.4;
         }}
 
-        #message {{
-            display: none;
-            padding: 14px;
-            background: #fff3cd;
-            color: #664d03;
+        #page-info {{
+            min-width: 70px;
+            color: white;
             text-align: center;
             font-size: 14px;
+        }}
+
+        #pdf-container {{
+            flex: 1 1 auto;
+            min-height: 0;
+            width: 100%;
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            padding:
+                10px
+                max(5px, env(safe-area-inset-right))
+                max(10px, env(safe-area-inset-bottom))
+                max(5px, env(safe-area-inset-left));
+            background: #525659;
+            text-align: center;
+        }}
+
+        #pdf-canvas {{
+            display: none;
+            margin: 0 auto;
+            background: white;
+            box-shadow: 0 3px 14px rgba(0, 0, 0, 0.45);
+        }}
+
+        #loading {{
+            padding: 40px 20px;
+            color: white;
+            text-align: center;
+            font-size: 16px;
+        }}
+
+        #error {{
+            display: none;
+            margin: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background: #b3261e;
+            color: white;
+            text-align: center;
         }}
 
         @media (max-width: 600px) {{
 
             #toolbar {{
-                min-height: 54px;
+                min-height: 50px;
+                gap: 4px;
             }}
 
-            #open-button {{
-                min-height: 40px;
-                font-size: 15px;
+            button {{
+                min-width: 37px;
+                min-height: 36px;
+                padding: 7px 8px;
+                font-size: 13px;
+            }}
+
+            #page-info {{
+                min-width: 60px;
+                font-size: 12px;
+            }}
+
+            #pdf-container {{
+                padding-top: 5px;
             }}
 
         }}
@@ -586,223 +637,498 @@ with tab_preview:
 
 <body>
 
-    <div id="viewer-container">
+    <div id="viewer">
 
         <div id="toolbar">
 
             <button
-                id="open-button"
-                type="button"
-                onclick="openStandaloneViewer()"
+                id="previous-button"
+                onclick="previousPage()"
             >
-                ⛶ Open full-screen PDF
+                ◀
+            </button>
+
+            <span id="page-info">
+                Loading...
+            </span>
+
+            <button
+                id="next-button"
+                onclick="nextPage()"
+            >
+                ▶
+            </button>
+
+            <button onclick="zoomOut()">
+                −
+            </button>
+
+            <button onclick="fitPage()">
+                Fit
+            </button>
+
+            <button onclick="zoomIn()">
+                +
             </button>
 
         </div>
 
-        <div id="message"></div>
+        <div id="pdf-container">
 
-        <iframe
-            id="pdf-frame"
-            title="KerkSlides PDF preview"
-        ></iframe>
+            <div id="loading">
+                Loading document...
+            </div>
+
+            <div id="error">
+                The document could not be loaded.
+            </div>
+
+            <canvas id="pdf-canvas"></canvas>
+
+        </div>
 
     </div>
 
     <script>
 
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+
         const pdfBase64 = "{pdf_base64}";
 
-        let pdfBlobUrl = null;
+        const pdfData = Uint8Array.from(
+            window.atob(pdfBase64),
+            character => character.charCodeAt(0)
+        );
 
 
-        /*
-        Convert the Python Base64 text back into a PDF file
-        inside the browser.
-        */
-
-        function createPdfBlobUrl() {{
-
-            if (pdfBlobUrl) {{
-                return pdfBlobUrl;
-            }}
-
-            const binaryString =
-                window.atob(pdfBase64);
-
-            const byteArray =
-                new Uint8Array(binaryString.length);
-
-            for (
-                let index = 0;
-                index < binaryString.length;
-                index++
-            ) {{
-
-                byteArray[index] =
-                    binaryString.charCodeAt(index);
-
-            }}
-
-            const pdfBlob = new Blob(
-                [byteArray],
-                {{
-                    type: "application/pdf"
-                }}
-            );
-
-            pdfBlobUrl =
-                URL.createObjectURL(pdfBlob);
-
-            return pdfBlobUrl;
-
-        }}
+        let pdfDocument = null;
+        let currentPage = 1;
+        let zoomFactor = 1.0;
+        let fitScale = 1.0;
+        let rendering = false;
 
 
-        /*
-        Show the PDF inside the Streamlit preview.
-        */
+        const container =
+            document.getElementById("pdf-container");
 
-        function loadEmbeddedPreview() {{
+        const canvas =
+            document.getElementById("pdf-canvas");
 
-            const pdfUrl =
-                createPdfBlobUrl();
+        const context =
+            canvas.getContext("2d");
 
-            document.getElementById(
-                "pdf-frame"
-            ).src = pdfUrl;
+        const pageInfo =
+            document.getElementById("page-info");
 
-        }}
+        const previousButton =
+            document.getElementById("previous-button");
+
+        const nextButton =
+            document.getElementById("next-button");
+
+        const loading =
+            document.getElementById("loading");
+
+        const errorMessage =
+            document.getElementById("error");
 
 
-        /*
-        Open the PDF in a separate browser tab.
-
-        On an iPhone or iPad, Safari then uses its own PDF
-        viewer. The PDF is no longer restricted to the
-        small Streamlit preview frame.
-        */
-
-        function openStandaloneViewer() {{
-
-            const message =
-                document.getElementById("message");
-
-            message.style.display = "none";
-
-            /*
-            Open the tab immediately from the button click.
-            This helps prevent Safari's popup blocker from
-            blocking the new tab.
-            */
-
-            const newTab =
-                window.open("", "_blank");
-
-            if (!newTab) {{
-
-                message.innerHTML =
-                    "Safari blocked the new tab. " +
-                    "Please allow pop-ups for this website " +
-                    "and press the button again.";
-
-                message.style.display = "block";
-
-                return;
-
-            }}
+        async function loadPDF() {{
 
             try {{
 
-                newTab.document.write(`
-                    <!DOCTYPE html>
+                const loadingTask =
+                    pdfjsLib.getDocument({{
+                        data: pdfData
+                    }});
 
-                    <html>
+                pdfDocument =
+                    await loadingTask.promise;
 
-                    <head>
+                loading.style.display =
+                    "none";
 
-                        <meta
-                            name="viewport"
-                            content="
-                                width=device-width,
-                                initial-scale=1.0,
-                                viewport-fit=cover
-                            "
-                        >
+                canvas.style.display =
+                    "block";
 
-                        <title>KerkSlides</title>
-
-                        <style>
-
-                            html,
-                            body {{
-                                width: 100%;
-                                height: 100%;
-                                margin: 0;
-                                padding: 0;
-                                overflow: hidden;
-                                background: #525659;
-                            }}
-
-                            iframe {{
-                                display: block;
-                                width: 100%;
-                                height: 100vh;
-                                height: 100dvh;
-                                border: none;
-                            }}
-
-                        </style>
-
-                    </head>
-
-                    <body>
-
-                        <iframe
-                            id="standalone-pdf"
-                            title="KerkSlides PDF"
-                        ></iframe>
-
-                    </body>
-
-                    </html>
-                `);
-
-                newTab.document.close();
-
-                const pdfUrl =
-                    createPdfBlobUrl();
-
-                newTab.document.getElementById(
-                    "standalone-pdf"
-                ).src = pdfUrl;
+                await renderPage(
+                    currentPage,
+                    true
+                );
 
             }} catch (error) {{
 
-                console.error(
-                    "Could not create standalone viewer:",
-                    error
-                );
+                console.error(error);
 
-                newTab.close();
+                loading.style.display =
+                    "none";
 
-                message.innerHTML =
-                    "The PDF could not be opened in a new tab. " +
-                    "Please use the download button above.";
+                errorMessage.style.display =
+                    "block";
 
-                message.style.display = "block";
+                pageInfo.textContent =
+                    "Error";
 
             }}
 
         }}
 
 
-        /*
-        Load the normal preview when the Streamlit component
-        starts.
-        */
+        async function calculateFitScale(page) {{
 
-        loadEmbeddedPreview();
+            const normalViewport =
+                page.getViewport({{
+                    scale: 1
+                }});
+
+            const availableWidth =
+                Math.max(
+                    container.clientWidth - 20,
+                    100
+                );
+
+            const availableHeight =
+                Math.max(
+                    container.clientHeight - 20,
+                    100
+                );
+
+            const widthScale =
+                availableWidth /
+                normalViewport.width;
+
+            const heightScale =
+                availableHeight /
+                normalViewport.height;
+
+            return Math.min(
+                widthScale,
+                heightScale
+            );
+
+        }}
+
+
+        async function renderPage(
+            pageNumber,
+            recalculateFit = false
+        ) {{
+
+            if (
+                !pdfDocument ||
+                rendering
+            ) {{
+                return;
+            }}
+
+            rendering = true;
+
+            try {{
+
+                const page =
+                    await pdfDocument.getPage(
+                        pageNumber
+                    );
+
+                if (recalculateFit) {{
+
+                    fitScale =
+                        await calculateFitScale(
+                            page
+                        );
+
+                }}
+
+                const scale =
+                    fitScale * zoomFactor;
+
+                const viewport =
+                    page.getViewport({{
+                        scale: scale
+                    }});
+
+                const outputScale =
+                    window.devicePixelRatio || 1;
+
+                canvas.width =
+                    Math.floor(
+                        viewport.width *
+                        outputScale
+                    );
+
+                canvas.height =
+                    Math.floor(
+                        viewport.height *
+                        outputScale
+                    );
+
+                canvas.style.width =
+                    Math.floor(
+                        viewport.width
+                    ) + "px";
+
+                canvas.style.height =
+                    Math.floor(
+                        viewport.height
+                    ) + "px";
+
+                const transform =
+                    outputScale !== 1
+                        ? [
+                            outputScale,
+                            0,
+                            0,
+                            outputScale,
+                            0,
+                            0
+                        ]
+                        : null;
+
+                await page.render({{
+                    canvasContext: context,
+                    viewport: viewport,
+                    transform: transform
+                }}).promise;
+
+                currentPage =
+                    pageNumber;
+
+                pageInfo.textContent =
+                    currentPage +
+                    " / " +
+                    pdfDocument.numPages;
+
+                previousButton.disabled =
+                    currentPage <= 1;
+
+                nextButton.disabled =
+                    currentPage >=
+                    pdfDocument.numPages;
+
+                container.scrollTop = 0;
+                container.scrollLeft = 0;
+
+            }} catch (error) {{
+
+                console.error(error);
+
+                errorMessage.style.display =
+                    "block";
+
+            }} finally {{
+
+                rendering = false;
+
+            }}
+
+        }}
+
+
+        function previousPage() {{
+
+            if (
+                !pdfDocument ||
+                currentPage <= 1
+            ) {{
+                return;
+            }}
+
+            renderPage(
+                currentPage - 1
+            );
+
+        }}
+
+
+        function nextPage() {{
+
+            if (
+                !pdfDocument ||
+                currentPage >= pdfDocument.numPages
+            ) {{
+                return;
+            }}
+
+            renderPage(
+                currentPage + 1
+            );
+
+        }}
+
+
+        function zoomIn() {{
+
+            zoomFactor =
+                Math.min(
+                    zoomFactor + 0.2,
+                    3
+                );
+
+            renderPage(
+                currentPage
+            );
+
+        }}
+
+
+        function zoomOut() {{
+
+            zoomFactor =
+                Math.max(
+                    zoomFactor - 0.2,
+                    0.4
+                );
+
+            renderPage(
+                currentPage
+            );
+
+        }}
+
+
+        function fitPage() {{
+
+            zoomFactor = 1;
+
+            renderPage(
+                currentPage,
+                true
+            );
+
+        }}
+
+
+        document.addEventListener(
+            "keydown",
+            function(event) {{
+
+                if (event.key === "ArrowLeft") {{
+                    previousPage();
+                }}
+
+                if (
+                    event.key === "ArrowRight" ||
+                    event.key === " "
+                ) {{
+
+                    event.preventDefault();
+
+                    nextPage();
+
+                }}
+
+            }}
+        );
+
+
+        let touchStartX = null;
+        let touchStartY = null;
+
+
+        container.addEventListener(
+            "touchstart",
+            function(event) {{
+
+                if (event.touches.length !== 1) {{
+                    return;
+                }}
+
+                touchStartX =
+                    event.touches[0].clientX;
+
+                touchStartY =
+                    event.touches[0].clientY;
+
+            }},
+            {{
+                passive: true
+            }}
+        );
+
+
+        container.addEventListener(
+            "touchend",
+            function(event) {{
+
+                if (
+                    touchStartX === null ||
+                    touchStartY === null
+                ) {{
+                    return;
+                }}
+
+                const touchEndX =
+                    event.changedTouches[0].clientX;
+
+                const touchEndY =
+                    event.changedTouches[0].clientY;
+
+                const differenceX =
+                    touchEndX - touchStartX;
+
+                const differenceY =
+                    touchEndY - touchStartY;
+
+                if (
+                    Math.abs(differenceX) > 70 &&
+                    Math.abs(differenceX) >
+                        Math.abs(differenceY)
+                ) {{
+
+                    if (differenceX < 0) {{
+                        nextPage();
+                    }} else {{
+                        previousPage();
+                    }}
+
+                }}
+
+                touchStartX = null;
+                touchStartY = null;
+
+            }},
+            {{
+                passive: true
+            }}
+        );
+
+
+        let resizeTimer = null;
+
+
+        window.addEventListener(
+            "resize",
+            function() {{
+
+                clearTimeout(
+                    resizeTimer
+                );
+
+                resizeTimer = setTimeout(
+                    function() {{
+
+                        if (pdfDocument) {{
+
+                            zoomFactor = 1;
+
+                            renderPage(
+                                currentPage,
+                                true
+                            );
+
+                        }}
+
+                    }},
+                    250
+                );
+
+            }}
+        );
+
+
+        loadPDF();
 
     </script>
 
@@ -811,12 +1137,13 @@ with tab_preview:
 </html>
 """
 
-        # ----------------------------------------------------
-        # DISPLAY PDF VIEWER
-        # ----------------------------------------------------
 
-        components.html(
-            preview_html,
-            height=800,
-            scrolling=False,
-        )
+# ----------------------------------------------------
+# DISPLAY PDF.JS VIEWER
+# ----------------------------------------------------
+
+components.html(
+    viewer_html,
+    height=800,
+    scrolling=False,
+)
