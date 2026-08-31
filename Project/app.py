@@ -1,12 +1,13 @@
-import streamlit as st
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-import gspread
-from pypdf import PdfWriter, PdfReader
-from io import BytesIO
 import base64
+from io import BytesIO
+
+import gspread
+import streamlit as st
 import streamlit.components.v1 as components
 
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from pypdf import PdfReader, PdfWriter
 
 
 # ============================================================
@@ -34,12 +35,7 @@ SOURCE_FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
 # document_id | document_name | selected
 SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
 
-# Folder in which the compiled PDF will be saved
-#
-# You can use the same folder as SOURCE_FOLDER_ID or create
-# a separate folder called, for example, KerkSlides_Output.
-OUTPUT_FOLDER_ID = "1-gSEGSv3aawp1JQ9ou7gy50ihPGCc0N3"
-
+# Name used when downloading the compiled PDF
 OUTPUT_FILE_NAME = "KerkSlides_Compiled.pdf"
 
 
@@ -83,17 +79,10 @@ sheet = gc.open_by_key(
 # HELPER FUNCTIONS
 # ============================================================
 
-def escape_drive_query(value):
-    """
-    Escape a text value before inserting it into a Drive query.
-    """
-    return value.replace("\\", "\\\\").replace("'", "\\'")
-
-
 def get_google_docs():
     """
     Retrieve all Google Docs from the configured source folder.
-    Handles pagination if the folder contains many files.
+    Handles pagination when the folder contains many files.
     """
 
     files = []
@@ -115,9 +104,13 @@ def get_google_docs():
             includeItemsFromAllDrives=True,
         ).execute()
 
-        files.extend(results.get("files", []))
+        files.extend(
+            results.get("files", [])
+        )
 
-        page_token = results.get("nextPageToken")
+        page_token = results.get(
+            "nextPageToken"
+        )
 
         if not page_token:
             break
@@ -139,16 +132,23 @@ def get_shared_selection():
         if row.get("document_id")
     }
 
+
 # ============================================================
 # GET GOOGLE DOCS
 # ============================================================
 
 try:
+
     google_docs = get_google_docs()
 
 except Exception as error:
-    st.error("Could not load the Google Docs.")
+
+    st.error(
+        "Could not load the Google Docs."
+    )
+
     st.exception(error)
+
     st.stop()
 
 
@@ -170,7 +170,9 @@ tab_select, tab_preview = st.tabs(
 
 with tab_select:
 
-    st.header("Select documents")
+    st.header(
+        "Select documents"
+    )
 
     if not google_docs:
 
@@ -185,14 +187,18 @@ with tab_select:
         )
 
         try:
+
             shared_selection = get_shared_selection()
 
         except Exception as error:
+
             st.error(
                 "Could not read the current selection "
                 "from Google Sheets."
             )
+
             st.exception(error)
+
             st.stop()
 
         current_selection = []
@@ -203,7 +209,9 @@ with tab_select:
 
         for file in google_docs:
 
-            document_id = str(file["id"])
+            document_id = str(
+                file["id"]
+            )
 
             selected = st.checkbox(
                 file["name"],
@@ -215,6 +223,7 @@ with tab_select:
             )
 
             if selected:
+
                 current_selection.append(
                     document_id
                 )
@@ -243,7 +252,9 @@ with tab_select:
 
                 for file in google_docs:
 
-                    document_id = str(file["id"])
+                    document_id = str(
+                        file["id"]
+                    )
 
                     row_number = row_by_id.get(
                         document_id
@@ -272,7 +283,7 @@ with tab_select:
 
                     else:
 
-                        # Add new document to the sheet
+                        # Add new document to Google Sheets
                         sheet.append_row(
                             [
                                 document_id,
@@ -303,17 +314,23 @@ with tab_select:
 
 with tab_preview:
 
-    st.header("👀 Combined document")
+    st.header(
+        "👀 Combined document"
+    )
 
     try:
+
         shared_selection = get_shared_selection()
 
     except Exception as error:
+
         st.error(
             "Could not read the current selection "
             "from Google Sheets."
         )
+
         st.exception(error)
+
         st.stop()
 
     selected_files = [
@@ -347,6 +364,7 @@ with tab_preview:
                 selected_files,
                 start=1,
             ):
+
                 st.write(
                     f"{index}. {file['name']}"
                 )
@@ -379,7 +397,10 @@ with tab_preview:
                     )
 
                     for page in pdf_reader.pages:
-                        pdf_writer.add_page(page)
+
+                        pdf_writer.add_page(
+                            page
+                        )
 
             except Exception as error:
 
@@ -389,6 +410,7 @@ with tab_preview:
                 )
 
                 st.exception(error)
+
                 st.stop()
 
         # ----------------------------------------------------
@@ -423,21 +445,369 @@ with tab_preview:
             "📖 Document preview"
         )
 
+        st.caption(
+            "On iPhone or iPad, use the button below to open "
+            "the document in a separate full-page Safari tab."
+        )
+
         # ----------------------------------------------------
-        # SIMPLE PDF PREVIEW
+        # CONVERT PDF TO BASE64
         # ----------------------------------------------------
 
         pdf_base64 = base64.b64encode(
             pdf_bytes
         ).decode("utf-8")
 
+        # ----------------------------------------------------
+        # STANDALONE PDF VIEWER
+        # ----------------------------------------------------
+
         preview_html = f"""
-        data:application/pdf;base64,{pdf_base64}</iframe>
-        """
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+    <meta
+        name="viewport"
+        content="
+            width=device-width,
+            initial-scale=1.0,
+            viewport-fit=cover
+        "
+    >
+
+    <style>
+
+        * {{
+            box-sizing: border-box;
+        }}
+
+        html,
+        body {{
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #525659;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                sans-serif;
+        }}
+
+        #viewer-container {{
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100vh;
+            height: 100dvh;
+            background: #525659;
+        }}
+
+        #toolbar {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 58px;
+            padding:
+                max(8px, env(safe-area-inset-top))
+                max(10px, env(safe-area-inset-right))
+                8px
+                max(10px, env(safe-area-inset-left));
+            background: #242629;
+        }}
+
+        #open-button {{
+            width: 100%;
+            max-width: 520px;
+            min-height: 42px;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 18px;
+            background: #ffffff;
+            color: #1f1f1f;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+        }}
+
+        #open-button:active {{
+            transform: scale(0.98);
+            background: #eeeeee;
+        }}
+
+        #pdf-frame {{
+            flex: 1;
+            display: block;
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: #525659;
+        }}
+
+        #message {{
+            display: none;
+            padding: 14px;
+            background: #fff3cd;
+            color: #664d03;
+            text-align: center;
+            font-size: 14px;
+        }}
+
+        @media (max-width: 600px) {{
+
+            #toolbar {{
+                min-height: 54px;
+            }}
+
+            #open-button {{
+                min-height: 40px;
+                font-size: 15px;
+            }}
+
+        }}
+
+    </style>
+
+</head>
+
+<body>
+
+    <div id="viewer-container">
+
+        <div id="toolbar">
+
+            <button
+                id="open-button"
+                type="button"
+                onclick="openStandaloneViewer()"
+            >
+                ⛶ Open full-screen PDF
+            </button>
+
+        </div>
+
+        <div id="message"></div>
+
+        <iframe
+            id="pdf-frame"
+            title="KerkSlides PDF preview"
+        ></iframe>
+
+    </div>
+
+    <script>
+
+        const pdfBase64 = "{pdf_base64}";
+
+        let pdfBlobUrl = null;
+
+
+        /*
+        Convert the Python Base64 text back into a PDF file
+        inside the browser.
+        */
+
+        function createPdfBlobUrl() {{
+
+            if (pdfBlobUrl) {{
+                return pdfBlobUrl;
+            }}
+
+            const binaryString =
+                window.atob(pdfBase64);
+
+            const byteArray =
+                new Uint8Array(binaryString.length);
+
+            for (
+                let index = 0;
+                index < binaryString.length;
+                index++
+            ) {{
+
+                byteArray[index] =
+                    binaryString.charCodeAt(index);
+
+            }}
+
+            const pdfBlob = new Blob(
+                [byteArray],
+                {{
+                    type: "application/pdf"
+                }}
+            );
+
+            pdfBlobUrl =
+                URL.createObjectURL(pdfBlob);
+
+            return pdfBlobUrl;
+
+        }}
+
+
+        /*
+        Show the PDF inside the Streamlit preview.
+        */
+
+        function loadEmbeddedPreview() {{
+
+            const pdfUrl =
+                createPdfBlobUrl();
+
+            document.getElementById(
+                "pdf-frame"
+            ).src = pdfUrl;
+
+        }}
+
+
+        /*
+        Open the PDF in a separate browser tab.
+
+        On an iPhone or iPad, Safari then uses its own PDF
+        viewer. The PDF is no longer restricted to the
+        small Streamlit preview frame.
+        */
+
+        function openStandaloneViewer() {{
+
+            const message =
+                document.getElementById("message");
+
+            message.style.display = "none";
+
+            /*
+            Open the tab immediately from the button click.
+            This helps prevent Safari's popup blocker from
+            blocking the new tab.
+            */
+
+            const newTab =
+                window.open("", "_blank");
+
+            if (!newTab) {{
+
+                message.innerHTML =
+                    "Safari blocked the new tab. " +
+                    "Please allow pop-ups for this website " +
+                    "and press the button again.";
+
+                message.style.display = "block";
+
+                return;
+
+            }}
+
+            try {{
+
+                newTab.document.write(`
+                    <!DOCTYPE html>
+
+                    <html>
+
+                    <head>
+
+                        <meta
+                            name="viewport"
+                            content="
+                                width=device-width,
+                                initial-scale=1.0,
+                                viewport-fit=cover
+                            "
+                        >
+
+                        <title>KerkSlides</title>
+
+                        <style>
+
+                            html,
+                            body {{
+                                width: 100%;
+                                height: 100%;
+                                margin: 0;
+                                padding: 0;
+                                overflow: hidden;
+                                background: #525659;
+                            }}
+
+                            iframe {{
+                                display: block;
+                                width: 100%;
+                                height: 100vh;
+                                height: 100dvh;
+                                border: none;
+                            }}
+
+                        </style>
+
+                    </head>
+
+                    <body>
+
+                        <iframe
+                            id="standalone-pdf"
+                            title="KerkSlides PDF"
+                        ></iframe>
+
+                    </body>
+
+                    </html>
+                `);
+
+                newTab.document.close();
+
+                const pdfUrl =
+                    createPdfBlobUrl();
+
+                newTab.document.getElementById(
+                    "standalone-pdf"
+                ).src = pdfUrl;
+
+            }} catch (error) {{
+
+                console.error(
+                    "Could not create standalone viewer:",
+                    error
+                );
+
+                newTab.close();
+
+                message.innerHTML =
+                    "The PDF could not be opened in a new tab. " +
+                    "Please use the download button above.";
+
+                message.style.display = "block";
+
+            }}
+
+        }}
+
+
+        /*
+        Load the normal preview when the Streamlit component
+        starts.
+        */
+
+        loadEmbeddedPreview();
+
+    </script>
+
+</body>
+
+</html>
+"""
+
+        # ----------------------------------------------------
+        # DISPLAY PDF VIEWER
+        # ----------------------------------------------------
 
         components.html(
             preview_html,
-            height=770,
+            height=800,
             scrolling=False,
         )
- 
