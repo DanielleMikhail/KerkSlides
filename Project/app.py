@@ -426,6 +426,15 @@ with tab_preview:
         combined_pdf.seek(0)
 
         pdf_bytes = combined_pdf.getvalue()
+        # DEBUG
+
+        combined_reader = PdfReader(
+            BytesIO(pdf_bytes)
+        )
+        
+        st.write(
+            f"Combined PDF pages: {len(combined_reader.pages)}"
+        )
 
         # ----------------------------------------------------
         # DOWNLOAD BUTTON
