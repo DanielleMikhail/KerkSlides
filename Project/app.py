@@ -132,10 +132,10 @@ def get_shared_selection():
 
     rows = sheet.get_all_records()
 
-    return (
+    return {
         str(row["document_id"]):
             str(row["selected"]).strip().upper() == "TRUE"
-        
-)
-
+        for row in rows
+        if row.get("document_id")
+    }
  
