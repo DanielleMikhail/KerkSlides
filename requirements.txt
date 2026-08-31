@@ -13,3 +13,4 @@ streamlit-pdf-viewer
 streamlit-sortables
 gspread
 streamlit-sortables==0.3.1
+streamlit-sortables
