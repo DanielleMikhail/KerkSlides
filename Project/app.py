@@ -1,11 +1,29 @@
+import base64
+from io import BytesIO
+
+import gspread
 import streamlit as st
+import streamlit.components.v1 as components
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-from googleapiclient.errors import HttpError
-import gspread
-from pypdf import PdfWriter, PdfReader
-from io import BytesIO
+from pypdf import PdfReader, PdfWriter
+
+
+# ============================================================
+# APP MODE
+# ============================================================
+
+# Normal app:
+# https://your-app.streamlit.app
+#
+# Presentation:
+# https://your-app.streamlit.app/?view=presentation
+
+presentation_mode = (
+    st.query_params.get("view", "")
+    == "presentation"
+)
 
 
 # ============================================================
@@ -13,31 +31,96 @@ from io import BytesIO
 # ============================================================
 
 st.set_page_config(
-    page_title="KerkSlides",
+    page_title=(
+        "KerkSlides Presentation"
+        if presentation_mode
+        else "KerkSlides"
+    ),
     page_icon="⛪",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-st.title("⛪ KerkSlides")
+
+# ============================================================
+# PRESENTATION PAGE STYLING
+# ============================================================
+
+if presentation_mode:
+
+    st.markdown(
+        """
+        <style>
+
+            #MainMenu {
+                display: none;
+            }
+
+            header {
+                display: none;
+            }
+
+            footer {
+                display: none;
+            }
+
+            [data-testid="stToolbar"] {
+                display: none;
+            }
+
+            [data-testid="stDecoration"] {
+                display: none;
+            }
+
+            [data-testid="stStatusWidget"] {
+                display: none;
+            }
+
+            [data-testid="stSidebar"] {
+                display: none;
+            }
+
+            [data-testid="collapsedControl"] {
+                display: none;
+            }
+
+            .stApp {
+                background: #202124;
+            }
+
+            .block-container {
+                max-width: 100%;
+                padding: 0;
+                margin: 0;
+            }
+
+            iframe {
+                display: block;
+                border: none;
+            }
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+else:
+
+    st.title("⛪ KerkSlides")
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-# Google Drive folder containing the source Google Docs
+# Folder containing the source Google Docs
 SOURCE_FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
 
-# Google Sheet containing the shared selection
+# Google Sheet containing:
+# document_id | document_name | selected
 SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
 
-# Google Drive folder where the combined PDF will be stored
-#
-# This may be the same folder as SOURCE_FOLDER_ID, but a separate
-# output folder is cleaner.
-OUTPUT_FOLDER_ID = "1-gSEGSv3aawp1JQ9ou7gy50ihPGCc0N3"
-
+# Name used when downloading the combined PDF
 OUTPUT_FILE_NAME = "KerkSlides_Compiled.pdf"
 
 
@@ -55,7 +138,7 @@ credentials = service_account.Credentials.from_service_account_info(
 
 
 # ============================================================
-# GOOGLE SERVICES
+# GOOGLE DRIVE
 # ============================================================
 
 drive_service = build(
@@ -65,7 +148,14 @@ drive_service = build(
     cache_discovery=False,
 )
 
-gc = gspread.authorize(credentials)
+
+# ============================================================
+# GOOGLE SHEETS
+# ============================================================
+
+gc = gspread.authorize(
+    credentials
+)
 
 sheet = gc.open_by_key(
     SPREADSHEET_ID
@@ -86,25 +176,28 @@ def get_google_docs():
 
     while True:
 
-        result = drive_service.files().list(
+        results = drive_service.files().list(
             q=(
                 f"'{SOURCE_FOLDER_ID}' in parents "
                 "and mimeType='application/vnd.google-apps.document' "
                 "and trashed=false"
             ),
-            fields="nextPageToken, files(id, name)",
+            fields=(
+                "nextPageToken, "
+                "files(id, name)"
+            ),
             orderBy="name",
-            pageSize=1000,
             pageToken=page_token,
+            pageSize=1000,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
         ).execute()
 
         files.extend(
-            result.get("files", [])
+            results.get("files", [])
         )
 
-        page_token = result.get(
+        page_token = results.get(
             "nextPageToken"
         )
 
@@ -116,39 +209,127 @@ def get_google_docs():
 
 def get_shared_selection():
     """
-    Read the selected status from Google Sheets.
+    Read the currently selected documents from Google Sheets.
     """
 
     rows = sheet.get_all_records()
 
     return {
-        str(row["document_id"]):
-            str(row["selected"]).strip().upper() == "TRUE"
+        str(row["document_id"]): (
+            str(row.get("selected", ""))
+            .strip()
+            .upper()
+            == "TRUE"
+        )
         for row in rows
         if row.get("document_id")
     }
 
 
-def create_combined_pdf(selected_files):
+def save_shared_selection(
+    google_docs,
+    current_selection,
+):
     """
-    Export the selected Google Docs as PDFs and combine them.
+    Update existing Google Sheet rows and append new documents.
+    """
 
-    Returns:
-        pdf_bytes
-        page_details
-        total_page_count
+    rows = sheet.get_all_records()
+
+    row_by_id = {
+        str(row["document_id"]): index + 2
+        for index, row in enumerate(rows)
+        if row.get("document_id")
+    }
+
+    current_selection = set(
+        current_selection
+    )
+
+    values_to_append = []
+
+    for file in google_docs:
+
+        document_id = str(
+            file["id"]
+        )
+
+        document_name = file["name"]
+
+        selected_value = (
+            "TRUE"
+            if document_id in current_selection
+            else "FALSE"
+        )
+
+        row_number = row_by_id.get(
+            document_id
+        )
+
+        if row_number:
+
+            sheet.update(
+                range_name=f"B{row_number}:C{row_number}",
+                values=[
+                    [
+                        document_name,
+                        selected_value,
+                    ]
+                ],
+            )
+
+        else:
+
+            values_to_append.append(
+                [
+                    document_id,
+                    document_name,
+                    selected_value,
+                ]
+            )
+
+    if values_to_append:
+
+        sheet.append_rows(
+            values_to_append,
+            value_input_option="USER_ENTERED",
+        )
+
+
+def get_selected_files(
+    google_docs,
+    shared_selection,
+):
+    """
+    Return only the documents selected in Google Sheets.
+    """
+
+    return [
+        file
+        for file in google_docs
+        if shared_selection.get(
+            str(file["id"]),
+            False,
+        )
+    ]
+
+
+def compile_selected_pdf(
+    selected_files,
+):
+    """
+    Export selected Google Docs and combine them into one PDF.
     """
 
     pdf_writer = PdfWriter()
 
-    page_details = []
-    total_page_count = 0
-
     for file in selected_files:
 
-        request = drive_service.files().export_media(
-            fileId=file["id"],
-            mimeType="application/pdf",
+        request = (
+            drive_service.files().export_media(
+                fileId=file["id"],
+                mimeType="application/pdf",
+            )
         )
 
         pdf_data = request.execute()
@@ -157,592 +338,195 @@ def create_combined_pdf(selected_files):
             BytesIO(pdf_data)
         )
 
-        document_page_count = len(
-            pdf_reader.pages
-        )
-
-        page_details.append({
-            "name": file["name"],
-            "pages": document_page_count,
-        })
-
-        total_page_count += document_page_count
-
         for page in pdf_reader.pages:
-            pdf_writer.add_page(page)
+
+            pdf_writer.add_page(
+                page
+            )
 
     combined_pdf = BytesIO()
 
-    pdf_writer.write(combined_pdf)
-    pdf_writer.close()
+    pdf_writer.write(
+        combined_pdf
+    )
 
     combined_pdf.seek(0)
 
-    pdf_bytes = combined_pdf.getvalue()
-
-    # Verify the final number of pages
-    verification_reader = PdfReader(
-        BytesIO(pdf_bytes)
-    )
-
-    verified_page_count = len(
-        verification_reader.pages
-    )
-
-    if verified_page_count != total_page_count:
-
-        raise ValueError(
-            "The number of pages in the combined PDF does not "
-            "match the total number of exported pages."
-        )
-
-    return (
-        pdf_bytes,
-        page_details,
-        verified_page_count,
-    )
+    return combined_pdf.getvalue()
 
 
-def find_existing_output_pdf():
+def create_pdf_viewer(
+    pdf_bytes,
+):
     """
-    Find the existing compiled PDF in the output folder.
+    Create the PDF.js viewer.
+
+    The viewer displays one page at a time and supports:
+    - previous and next buttons
+    - swipe navigation
+    - zoom
+    - fit-to-screen
+    - fullscreen where supported
     """
 
-    escaped_file_name = (
-        OUTPUT_FILE_NAME
-        .replace("\\", "\\\\")
-        .replace("'", "\\'")
-    )
-
-    query = (
-        f"'{OUTPUT_FOLDER_ID}' in parents "
-        f"and name='{escaped_file_name}' "
-        "and mimeType='application/pdf' "
-        "and trashed=false"
-    )
-
-    result = drive_service.files().list(
-        q=query,
-        fields="files(id, name)",
-        pageSize=10,
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-    ).execute()
-
-    files = result.get("files", [])
-
-    if files:
-        return files[0]
-
-    return None
-
-
-def enable_link_access(file_id):
-    """
-    Give anyone with the link permission to view the PDF.
-
-    If public sharing is disabled in Google Workspace,
-    this function returns the error without stopping the app.
-    """
-
-    try:
-
-        permissions = drive_service.permissions().list(
-            fileId=file_id,
-            fields="permissions(id, type, role)",
-            supportsAllDrives=True,
-        ).execute()
-
-        anyone_permission_exists = any(
-            permission.get("type") == "anyone"
-            and permission.get("role") == "reader"
-            for permission in permissions.get(
-                "permissions",
-                [],
-            )
-        )
-
-        if not anyone_permission_exists:
-
-            drive_service.permissions().create(
-                fileId=file_id,
-                body={
-                    "type": "anyone",
-                    "role": "reader",
-                },
-                fields="id",
-                supportsAllDrives=True,
-            ).execute()
-
-        return None
-
-    except HttpError as error:
-
-        return str(error)
-
-
-def upload_or_update_pdf(pdf_bytes):
-    """
-    Upload the compiled PDF to Google Drive.
-
-    If the file already exists, replace its contents.
-    This means that the Google Drive URL remains stable.
-    """
-
-    existing_file = find_existing_output_pdf()
-
-    pdf_stream = BytesIO(pdf_bytes)
-
-    media = MediaIoBaseUpload(
-        pdf_stream,
-        mimetype="application/pdf",
-        resumable=True,
-    )
-
-    if existing_file:
-
-        uploaded_file = drive_service.files().update(
-            fileId=existing_file["id"],
-            media_body=media,
-            fields="id, name",
-            supportsAllDrives=True,
-        ).execute()
-
-    else:
-
-        file_metadata = {
-            "name": OUTPUT_FILE_NAME,
-            "mimeType": "application/pdf",
-            "parents": [OUTPUT_FOLDER_ID],
-        }
-
-        uploaded_file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, name",
-            supportsAllDrives=True,
-        ).execute()
-
-    file_id = uploaded_file["id"]
-
-    permission_error = enable_link_access(
-        file_id
-    )
-
-    # Google Drive preview page
-    preview_url = (
-        f"https://drive.google.com/file/d/"
-        f"{file_id}/view"
-    )
-
-    # Direct PDF response
-    direct_url = (
-        f"https://drive.google.com/uc?"
-        f"export=download&id={file_id}"
-    )
-
-    return {
-        "file_id": file_id,
-        "preview_url": preview_url,
-        "direct_url": direct_url,
-        "permission_error": permission_error,
-    }
-
-
-# ============================================================
-# LOAD GOOGLE DOCS
-# ============================================================
-
-try:
-
-    google_docs = get_google_docs()
-
-except HttpError as error:
-
-    st.error(
-        "The app could not access the Google Drive folder. "
-        "Check the folder ID and service account permissions."
-    )
-
-    st.exception(error)
-    st.stop()
-
-
-# ============================================================
-# CREATE TABS
-# ============================================================
-
-tab_select, tab_slides = st.tabs(
-    [
-        "📁 Select documents",
-        "📖 Open slides",
-    ]
-)
-
-
-# ============================================================
-# TAB 1: SELECT DOCUMENTS
-# ============================================================
-
-with tab_select:
-
-    st.header("Select documents")
-
-    if not google_docs:
-
-        st.warning(
-            "No Google Docs were found in the source folder."
-        )
-
-    else:
-
-        st.write(
-            f"Found **{len(google_docs)} documents**."
-        )
-
-        try:
-
-            shared_selection = get_shared_selection()
-
-        except Exception as error:
-
-            st.error(
-                "The shared selection could not be read "
-                "from Google Sheets."
-            )
-
-            st.exception(error)
-            st.stop()
-
-        current_selection = []
-
-        # ----------------------------------------------------
-        # DOCUMENT CHECKBOXES
-        # ----------------------------------------------------
-
-        for file in google_docs:
-
-            selected = st.checkbox(
-                file["name"],
-                value=shared_selection.get(
-                    file["id"],
-                    False,
-                ),
-                key=f"checkbox_{file['id']}",
-            )
-
-            if selected:
-
-                current_selection.append(
-                    file["id"]
-                )
-
-        # ----------------------------------------------------
-        # UPDATE SHARED SELECTION
-        # ----------------------------------------------------
-
-        st.divider()
-
-        if st.button(
-            "💾 Update shared selection",
-            type="primary",
-            use_container_width=True,
-        ):
-
-            try:
-
-                rows = sheet.get_all_records()
-
-                row_by_id = {
-                    str(row["document_id"]): index + 2
-                    for index, row in enumerate(rows)
-                    if row.get("document_id")
-                }
-
-                updates = []
-
-                for file in google_docs:
-
-                    row_number = row_by_id.get(
-                        file["id"]
-                    )
-
-                    if row_number is None:
-                        continue
-
-                    if file["id"] in current_selection:
-                        selected_value = "TRUE"
-                    else:
-                        selected_value = "FALSE"
-
-                    updates.append({
-                        "range": f"C{row_number}",
-                        "values": [[selected_value]],
-                    })
-
-                if updates:
-
-                    sheet.batch_update(
-                        updates
-                    )
-
-                # Remove the previous compiled file from this
-                # user's session because the selection changed.
-                st.session_state.pop(
-                    "compiled_pdf_bytes",
-                    None,
-                )
-
-                st.session_state.pop(
-                    "compiled_preview_url",
-                    None,
-                )
-
-                st.session_state.pop(
-                    "compiled_direct_url",
-                    None,
-                )
-
-                st.session_state.pop(
-                    "compiled_page_count",
-                    None,
-                )
-
-                st.session_state.pop(
-                    "compiled_page_details",
-                    None,
-                )
-
-                st.success(
-                    "Shared selection updated."
-                )
-
-                st.rerun()
-
-            except Exception as error:
-
-                st.error(
-                    "The shared selection could not be updated."
-                )
-
-                st.exception(error)
-
-
-# ============================================================
-# TAB 2: CREATE AND OPEN SLIDES
-# ============================================================
-
-with tab_slides:
-
-    st.header("📖 Combined slides")
-
-    try:
-
-        shared_selection = get_shared_selection()
-
-    except Exception as error:
-
-        st.error(
-            "The shared selection could not be read "
-            "from Google Sheets."
-        )
-
-        st.exception(error)
-        st.stop()
-
-    selected_files = [
-        file
-        for file in google_docs
-        if shared_selection.get(
-            file["id"],
-            False,
-        )
-    ]
-
-    if not selected_files:
-
-        st.info(
-            "No documents have been selected yet. "
-            "Select documents in the first tab."
-        )
-
-    else:
-
-        st.write(
-            f"**{len(selected_files)} documents selected.**"
-        )
-
-        with st.expander(
-            "View selected documents"
-        ):
-
-            for file in selected_files:
-                st.write(f"• {file['name']}")
-
-        st.divider()
-
-        # ----------------------------------------------------
-        # CREATE BUTTON
-        # ----------------------------------------------------
-
-        if st.button(
-            "🔄 Create combined slides",
-            type="primary",
-            use_container_width=True,
-        ):
-
-            try:
-
-                with st.spinner(
-                    "Exporting and combining documents..."
-                ):
-
-                    (
-                        pdf_bytes,
-                        page_details,
-                        verified_page_count,
-                    ) = create_combined_pdf(
-                        selected_files
-                    )
-
-                with st.spinner(
-                    "Uploading the PDF to Google Drive..."
-                ):
-
-                    upload_result = upload_or_update_pdf(
-                        pdf_bytes
-                    )
-
-                st.session_state[
-                    "compiled_pdf_bytes"
-                ] = pdf_bytes
-
-                st.session_state[
-                    "compiled_preview_url"
-                ] = upload_result["preview_url"]
-
-                st.session_state[
-                    "compiled_direct_url"
-                ] = upload_result["direct_url"]
-
-                st.session_state[
-                    "compiled_page_count"
-                ] = verified_page_count
-
-                st.session_state[
-                    "compiled_page_details"
-                ] = page_details
-
-                st.session_state[
-                    "permission_error"
-                ] = upload_result["permission_error"]
-
-                st.success(
-                    "The combined slides are ready."
-                )
-
-            except HttpError as error:
-
-                st.error(
-                    "Google Drive could not create or update "
-                    "the combined PDF."
-                )
-
-                st.exception(error)
-
-            except Exception as error:
-
-                st.error(
-                    "The combined PDF could not be created."
-                )
-
-                st.exception(error)
-
-        # ----------------------------------------------------
-        # RESULTS
-        # ----------------------------------------------------
-
-        if st.session_state.get(
-            "compiled_preview_url"
-        ):
-
-            st.divider()
-
-            # Debug information requested
-            page_count = st.session_state.get(
-                "compiled_page_count",
-                0,
-            )
-
-            st.success(
-                f"Combined PDF pages: {page_count}"
-            )
-
-            page_details = st.session_state.get(
-                "compiled_page_details",
-                [],
-            )
-
-            with st.expander(
-                "Check the number of pages per document"
-            ):
-
-                for document in page_details:
-
-                    st.write(
-                        f"• {document['name']}: "
-                        f"{document['pages']} page(s)"
-                    )
-
-            # This button opens Google Drive in a new browser tab
-            st.link_button(
-                "⛶ Open slides in new window",
-                st.session_state[
-                    "compiled_preview_url"
-                ],
-                type="primary",
-                use_container_width=True,
-            )
-
-            st.caption(
-                "On iPhone or iPad, tap the button above. "
-                "The PDF should open in a separate Google Drive "
-                "viewer page. Scroll vertically to view all pages."
-            )
-
-            # Direct download option
-            if st.session_state.get(
-                "compiled_pdf_bytes"
-            ):
-
-                st.download_button(
-                    "⬇️ Download combined PDF",
-                    data=st.session_state[
-                        "compiled_pdf_bytes"
-                    ],
-                    file_name=OUTPUT_FILE_NAME,
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-
-            # Public-sharing problem
-            if st.session_state.get(
-                "permission_error"
-            ):
-
-                st.warning(
-                    "The PDF was created, but public link access "
-                    "could not be enabled. Your Google Workspace "
-                    "administrator may block public sharing. "
-                    "Visitors will need Google Drive access."
-                )
-
-                with st.expander(
-                    "Technical sharing error"
-                ):
-
-                    st.code(
-                        st.session_state[
-                            "permission_error"
-                        ]
-                    )
+    pdf_base64 = base64.b64encode(
+        pdf_bytes
+    ).decode("utf-8")
+
+    viewer_html = f"""
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta
+        name="viewport"
+        content="
+            width=device-width,
+            initial-scale=1.0,
+            maximum-scale=5.0,
+            user-scalable=yes,
+            viewport-fit=cover
+        "
+    >
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+    <style>
+
+        * {{
+            box-sizing: border-box;
+        }}
+
+        html,
+        body {{
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #202124;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                sans-serif;
+        }}
+
+        #viewer {{
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            background: #202124;
+        }}
+
+        #toolbar {{
+            flex: 0 0 auto;
+            min-height: 54px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding:
+                max(6px, env(safe-area-inset-top))
+                max(8px, env(safe-area-inset-right))
+                6px
+                max(8px, env(safe-area-inset-left));
+            background: #292b2d;
+            z-index: 20;
+        }}
+
+        button {{
+            min-width: 42px;
+            min-height: 38px;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 11px;
+            background: white;
+            color: #202124;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            touch-action: manipulation;
+        }}
+
+        button:active {{
+            transform: scale(0.96);
+            background: #e8eaed;
+        }}
+
+        button:disabled {{
+            opacity: 0.4;
+            cursor: default;
+        }}
+
+        #page-info {{
+            min-width: 72px;
+            color: white;
+            text-align: center;
+            font-size: 14px;
+            white-space: nowrap;
+        }}
+
+        #pdf-container {{
+            flex: 1 1 auto;
+            min-height: 0;
+            width: 100%;
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            padding:
+                8px
+                max(5px, env(safe-area-inset-right))
+                max(8px, env(safe-area-inset-bottom))
+                max(5px, env(safe-area-inset-left));
+            background: #525659;
+            text-align: center;
+        }}
+
+        #pdf-canvas {{
+            display: none;
+            margin: 0 auto;
+            background: white;
+            box-shadow:
+                0 3px 14px
+                rgba(0, 0, 0, 0.45);
+        }}
+
+        #loading {{
+            padding: 40px 20px;
+            color: white;
+            text-align: center;
+            font-size: 16px;
+        }}
+
+        #error {{
+            display: none;
+            margin: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background: #b3261e;
+            color: white;
+            text-align: center;
+        }}
+
+        #viewer:fullscreen {{
+            width: 100vw;
+            height: 100vh;
+        }}
+
+        #viewer:-webkit-full-screen {{
+            width: 100vw;
+            height: 100vh;
+        }}
+
+        @media (max-width: 600px) {{
+
+            #toolbar {{
+                min-height: 50px;
+                
