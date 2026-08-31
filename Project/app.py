@@ -1,5 +1,4 @@
 import base64
-from collections import Counter
 from io import BytesIO
 
 import gspread
@@ -9,7 +8,6 @@ import streamlit.components.v1 as components
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from pypdf import PdfReader, PdfWriter
-from streamlit_sortables import sort_items
 
 
 # ============================================================
@@ -19,7 +17,7 @@ from streamlit_sortables import sort_items
 # Normal app:
 # https://your-app.streamlit.app
 #
-# Standalone presentation:
+# Presentation:
 # https://your-app.streamlit.app/?view=presentation
 
 presentation_mode = (
@@ -40,31 +38,12 @@ st.set_page_config(
     ),
     page_icon="⛪",
     layout="wide",
-    initial_sidebar_state=(
-        "collapsed"
-        if presentation_mode
-        else "expanded"
-    ),
+    initial_sidebar_state="collapsed",
 )
 
 
 # ============================================================
-# CONFIGURATION
-# ============================================================
-
-# Google Drive folder containing the Google Docs
-SOURCE_FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
-
-# Google Sheet containing:
-# document_id | document_name | selected | order
-SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
-
-# Name of downloaded combined PDF
-OUTPUT_FILE_NAME = "KerkSlides_Compiled.pdf"
-
-
-# ============================================================
-# STYLING
+# PRESENTATION PAGE STYLING
 # ============================================================
 
 if presentation_mode:
@@ -72,6 +51,7 @@ if presentation_mode:
     st.markdown(
         """
         <style>
+
             #MainMenu {
                 display: none;
             }
@@ -118,6 +98,7 @@ if presentation_mode:
                 display: block;
                 border: none;
             }
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -125,25 +106,22 @@ if presentation_mode:
 
 else:
 
-    st.markdown(
-        """
-        <style>
-            .block-container {
-                padding-top: 2rem;
-                padding-bottom: 3rem;
-            }
+    st.title("⛪ KerkSlides")
 
-            [data-testid="stSidebar"] {
-                min-width: 260px;
-            }
 
-            [data-testid="stSidebar"] .block-container {
-                padding-top: 1.5rem;
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+# Folder containing the source Google Docs
+SOURCE_FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
+
+# Google Sheet containing:
+# document_id | document_name | selected
+SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
+
+# Name used when downloading the combined PDF
+OUTPUT_FILE_NAME = "KerkSlides_Compiled.pdf"
 
 
 # ============================================================
@@ -185,12 +163,12 @@ sheet = gc.open_by_key(
 
 
 # ============================================================
-# GOOGLE DRIVE FUNCTIONS
+# HELPER FUNCTIONS
 # ============================================================
 
 def get_google_docs():
     """
-    Retrieve all Google Docs from the configured Drive folder.
+    Retrieve all Google Docs from the source folder.
     """
 
     files = []
@@ -229,64 +207,31 @@ def get_google_docs():
     return files
 
 
-# ============================================================
-# GOOGLE SHEET FUNCTIONS
-# ============================================================
-
-def get_ordered_selection():
+def get_shared_selection():
     """
-    Read selected document IDs from Google Sheets in their
-    saved presentation order.
+    Read the currently selected documents from Google Sheets.
     """
 
     rows = sheet.get_all_records()
 
-    selected_rows = [
-        row
-        for row in rows
-        if (
-            row.get("document_id")
-            and str(row.get("selected", ""))
+    return {
+        str(row["document_id"]): (
+            str(row.get("selected", ""))
             .strip()
             .upper()
             == "TRUE"
         )
-    ]
-
-    def get_order_value(row):
-
-        order_value = str(
-            row.get("order", "")
-        ).strip()
-
-        try:
-            return int(float(order_value))
-
-        except (TypeError, ValueError):
-            return 999999
-
-    selected_rows.sort(
-        key=get_order_value
-    )
-
-    return [
-        str(row["document_id"])
-        for row in selected_rows
-    ]
+        for row in rows
+        if row.get("document_id")
+    }
 
 
-def save_ordered_selection(
+def save_shared_selection(
     google_docs,
-    ordered_document_ids,
+    current_selection,
 ):
     """
-    Save selected documents and presentation order.
-
-    Google Sheet columns:
-    A: document_id
-    B: document_name
-    C: selected
-    D: order
+    Update existing Google Sheet rows and append new documents.
     """
 
     rows = sheet.get_all_records()
@@ -297,108 +242,75 @@ def save_ordered_selection(
         if row.get("document_id")
     }
 
-    ordered_document_ids = [
-        str(document_id)
-        for document_id in ordered_document_ids
-    ]
+    current_selection = set(
+        current_selection
+    )
 
-    order_by_id = {
-        document_id: position
-        for position, document_id in enumerate(
-            ordered_document_ids,
-            start=1,
-        )
-    }
+    values_to_append = []
 
-    updates = []
-    new_rows = []
-
-    for document in google_docs:
+    for file in google_docs:
 
         document_id = str(
-            document["id"]
+            file["id"]
         )
 
-        document_name = document["name"]
+        document_name = file["name"]
 
-        if document_id in order_by_id:
-
-            selected_value = "TRUE"
-
-            order_value = order_by_id[
-                document_id
-            ]
-
-        else:
-
-            selected_value = "FALSE"
-            order_value = ""
+        selected_value = (
+            "TRUE"
+            if document_id in current_selection
+            else "FALSE"
+        )
 
         row_number = row_by_id.get(
             document_id
         )
 
-        row_values = [
-            document_id,
-            document_name,
-            selected_value,
-            order_value,
-        ]
-
         if row_number:
 
-            updates.append(
-                {
-                    "range": (
-                        f"A{row_number}:D{row_number}"
-                    ),
-                    "values": [
-                        row_values
-                    ],
-                }
+            sheet.update(
+                range_name=f"B{row_number}:C{row_number}",
+                values=[
+                    [
+                        document_name,
+                        selected_value,
+                    ]
+                ],
             )
 
         else:
 
-            new_rows.append(
-                row_values
+            values_to_append.append(
+                [
+                    document_id,
+                    document_name,
+                    selected_value,
+                ]
             )
 
-    if updates:
-
-        sheet.batch_update(
-            updates
-        )
-
-    if new_rows:
+    if values_to_append:
 
         sheet.append_rows(
-            new_rows,
+            values_to_append,
             value_input_option="USER_ENTERED",
         )
 
 
-# ============================================================
-# DOCUMENT FUNCTIONS
-# ============================================================
-
-def get_ordered_files(
+def get_selected_files(
     google_docs,
-    ordered_document_ids,
+    shared_selection,
 ):
     """
-    Return selected Google Docs in presentation order.
+    Return only the documents selected in Google Sheets.
     """
 
-    file_by_id = {
-        str(document["id"]): document
-        for document in google_docs
-    }
-
     return [
-        file_by_id[document_id]
-        for document_id in ordered_document_ids
-        if document_id in file_by_id
+        file
+        for file in google_docs
+        if shared_selection.get(
+            str(file["id"]),
+            False,
+        )
     ]
 
 
@@ -406,17 +318,18 @@ def compile_selected_pdf(
     selected_files,
 ):
     """
-    Export selected Google Docs as PDFs and combine them in
-    the selected order.
+    Export selected Google Docs and combine them into one PDF.
     """
 
     pdf_writer = PdfWriter()
 
-    for document in selected_files:
+    for file in selected_files:
 
-        request = drive_service.files().export_media(
-            fileId=document["id"],
-            mimeType="application/pdf",
+        request = (
+            drive_service.files().export_media(
+                fileId=file["id"],
+                mimeType="application/pdf",
+            )
         )
 
         pdf_data = request.execute()
@@ -442,15 +355,18 @@ def compile_selected_pdf(
     return combined_pdf.getvalue()
 
 
-# ============================================================
-# PDF PRESENTATION VIEWER
-# ============================================================
-
 def create_pdf_viewer(
     pdf_bytes,
 ):
     """
-    Create the standalone PDF.js presentation viewer.
+    Create the PDF.js viewer.
+
+    The viewer displays one page at a time and supports:
+    - previous and next buttons
+    - swipe navigation
+    - zoom
+    - fit-to-screen
+    - fullscreen where supported
     """
 
     pdf_base64 = base64.b64encode(
@@ -626,6 +542,10 @@ def create_pdf_viewer(
             #page-info {{
                 min-width: 58px;
                 font-size: 12px;
+            }}
+
+            #pdf-container {{
+                padding-top: 5px;
             }}
 
         }}
@@ -881,12 +801,14 @@ def create_pdf_viewer(
 
                 canvas.width =
                     Math.floor(
-                        viewport.width * outputScale
+                        viewport.width *
+                        outputScale
                     );
 
                 canvas.height =
                     Math.floor(
-                        viewport.height * outputScale
+                        viewport.height *
+                        outputScale
                     );
 
                 canvas.style.width =
@@ -948,13 +870,13 @@ def create_pdf_viewer(
 
                 if (pendingPage !== null) {{
 
-                    const nextPendingPage =
+                    const pageToRender =
                         pendingPage;
 
                     pendingPage = null;
 
                     renderPage(
-                        nextPendingPage
+                        pageToRender
                     );
 
                 }}
@@ -967,15 +889,15 @@ def create_pdf_viewer(
         function previousPage() {{
 
             if (
-                pdfDocument &&
-                currentPage > 1
+                !pdfDocument ||
+                currentPage <= 1
             ) {{
-
-                renderPage(
-                    currentPage - 1
-                );
-
+                return;
             }}
+
+            renderPage(
+                currentPage - 1
+            );
 
         }}
 
@@ -983,15 +905,15 @@ def create_pdf_viewer(
         function nextPage() {{
 
             if (
-                pdfDocument &&
-                currentPage < pdfDocument.numPages
+                !pdfDocument ||
+                currentPage >= pdfDocument.numPages
             ) {{
-
-                renderPage(
-                    currentPage + 1
-                );
-
+                return;
             }}
+
+            renderPage(
+                currentPage + 1
+            );
 
         }}
 
@@ -1078,7 +1000,7 @@ def create_pdf_viewer(
             }} catch (error) {{
 
                 console.log(
-                    "Fullscreen is not available.",
+                    "Fullscreen is not available:",
                     error
                 );
 
@@ -1124,7 +1046,9 @@ def create_pdf_viewer(
             "touchstart",
             function(event) {{
 
-                if (event.touches.length !== 1) {{
+                if (
+                    event.touches.length !== 1
+                ) {{
                     return;
                 }}
 
@@ -1226,6 +1150,58 @@ def create_pdf_viewer(
         );
 
 
+        document.addEventListener(
+            "fullscreenchange",
+            function() {{
+
+                setTimeout(
+                    function() {{
+
+                        if (pdfDocument) {{
+
+                            zoomFactor = 1.0;
+
+                            renderPage(
+                                currentPage,
+                                true
+                            );
+
+                        }}
+
+                    }},
+                    250
+                );
+
+            }}
+        );
+
+
+        document.addEventListener(
+            "webkitfullscreenchange",
+            function() {{
+
+                setTimeout(
+                    function() {{
+
+                        if (pdfDocument) {{
+
+                            zoomFactor = 1.0;
+
+                            renderPage(
+                                currentPage,
+                                true
+                            );
+
+                        }}
+
+                    }},
+                    250
+                );
+
+            }}
+        );
+
+
         loadPDF();
 
     </script>
@@ -1265,19 +1241,19 @@ if presentation_mode:
 
     try:
 
-        ordered_document_ids = (
-            get_ordered_selection()
+        shared_selection = (
+            get_shared_selection()
         )
 
-        selected_files = get_ordered_files(
+        selected_files = get_selected_files(
             google_docs,
-            ordered_document_ids,
+            shared_selection,
         )
 
     except Exception as error:
 
         st.error(
-            "Could not load the selected documents."
+            "Could not load the shared selection."
         )
 
         st.exception(error)
@@ -1297,8 +1273,8 @@ if presentation_mode:
             ">
                 <h2>No documents selected</h2>
                 <p>
-                    Return to KerkSlides and add documents
-                    to the presentation first.
+                    Return to KerkSlides and select
+                    the documents first.
                 </p>
             </div>
             """,
@@ -1339,25 +1315,150 @@ if presentation_mode:
         scrolling=False,
     )
 
+    # Prevent the normal app from appearing underneath.
     st.stop()
 
 
 # ============================================================
-# INITIALIZE NORMAL APP
+# NORMAL APP TABS
 # ============================================================
 
-if "ordered_document_ids" not in st.session_state:
+tab_select, tab_preview = st.tabs(
+    [
+        "📁 Select documents",
+        "👀 Preview",
+    ]
+)
+
+
+# ============================================================
+# TAB 1: SELECT DOCUMENTS
+# ============================================================
+
+with tab_select:
+
+    st.header(
+        "Select documents"
+    )
+
+    if not google_docs:
+
+        st.warning(
+            "No Google Docs were found in the source folder."
+        )
+
+    else:
+
+        st.write(
+            f"Found **{len(google_docs)} documents**."
+        )
+
+        try:
+
+            shared_selection = (
+                get_shared_selection()
+            )
+
+        except Exception as error:
+
+            st.error(
+                "Could not read the current selection "
+                "from Google Sheets."
+            )
+
+            st.exception(error)
+
+            st.stop()
+
+
+        current_selection = []
+
+
+        # ----------------------------------------------------
+        # CHECKBOXES
+        # ----------------------------------------------------
+
+        for file in google_docs:
+
+            document_id = str(
+                file["id"]
+            )
+
+            selected = st.checkbox(
+                file["name"],
+                value=shared_selection.get(
+                    document_id,
+                    False,
+                ),
+                key=f"checkbox_{document_id}",
+            )
+
+            if selected:
+
+                current_selection.append(
+                    document_id
+                )
+
+
+        # ----------------------------------------------------
+        # SAVE SELECTION
+        # ----------------------------------------------------
+
+        st.divider()
+
+        if st.button(
+            "💾 Update shared selection",
+            type="primary",
+            use_container_width=True,
+        ):
+
+            try:
+
+                save_shared_selection(
+                    google_docs,
+                    current_selection,
+                )
+
+                st.success(
+                    "Shared selection updated! ✅"
+                )
+
+                st.rerun()
+
+            except Exception as error:
+
+                st.error(
+                    "Could not update the shared selection."
+                )
+
+                st.exception(error)
+
+
+# ============================================================
+# TAB 2: PREVIEW
+# ============================================================
+
+with tab_preview:
+
+    st.header(
+        "👀 Combined document"
+    )
 
     try:
 
-        st.session_state.ordered_document_ids = (
-            get_ordered_selection()
+        shared_selection = (
+            get_shared_selection()
+        )
+
+        selected_files = get_selected_files(
+            google_docs,
+            shared_selection,
         )
 
     except Exception as error:
 
         st.error(
-            "Could not load the selected documents."
+            "Could not read the shared selection."
         )
 
         st.exception(error)
@@ -1365,474 +1466,47 @@ if "ordered_document_ids" not in st.session_state:
         st.stop()
 
 
-# ============================================================
-# REMOVE MISSING GOOGLE DOCS FROM SELECTION
-# ============================================================
-
-available_document_ids = {
-    str(document["id"])
-    for document in google_docs
-}
-
-cleaned_order = [
-    document_id
-    for document_id
-    in st.session_state.ordered_document_ids
-    if document_id in available_document_ids
-]
-
-if (
-    cleaned_order
-    != st.session_state.ordered_document_ids
-):
-
-    st.session_state.ordered_document_ids = (
-        cleaned_order
-    )
-
-
-# ============================================================
-# DOCUMENT LOOKUPS
-# ============================================================
-
-document_by_id = {
-    str(document["id"]): document
-    for document in google_docs
-}
-
-document_name_by_id = {
-    str(document["id"]): document["name"]
-    for document in google_docs
-}
-
-
-# ============================================================
-# SIDEBAR NAVIGATION ONLY
-# ============================================================
-
-with st.sidebar:
-
-    st.title(
-        "⛪ KerkSlides"
-    )
-
-    st.caption(
-        "Presentation manager"
-    )
-
-    selected_page = st.radio(
-        "Navigation",
-        options=[
-            "📁 Select documents",
-            "👀 Review",
-        ],
-        label_visibility="collapsed",
-        key="sidebar_navigation",
-    )
-
-
-# ============================================================
-# MAIN PAGE TITLE
-# ============================================================
-
-st.title(
-    "⛪ KerkSlides"
-)
-
-
-# ============================================================
-# PAGE 1: SELECT DOCUMENTS
-# ============================================================
-
-if selected_page == "📁 Select documents":
-
-    st.header(
-        "Select documents"
-    )
-
-    st.write(
-        "Choose a document, add it to the presentation, "
-        "and drag the added documents into the preferred order."
-    )
-
-
-    # --------------------------------------------------------
-    # AVAILABLE DOCUMENTS
-    # --------------------------------------------------------
-
-    selected_id_set = set(
-        st.session_state.ordered_document_ids
-    )
-
-    available_ids = [
-        str(document["id"])
-        for document in google_docs
-        if str(document["id"])
-        not in selected_id_set
-    ]
-
-
-    # --------------------------------------------------------
-    # DROPDOWN AND ADD BUTTON
-    # --------------------------------------------------------
-
-    dropdown_column, button_column = st.columns(
-        [4, 1],
-        vertical_alignment="bottom",
-    )
-
-    with dropdown_column:
-
-        selected_document_id = st.selectbox(
-            "Document",
-            options=available_ids,
-            index=None,
-            placeholder=(
-                "Select a document..."
-                if available_ids
-                else "All documents have been added"
-            ),
-            format_func=lambda document_id: (
-                document_name_by_id.get(
-                    document_id,
-                    document_id,
-                )
-            ),
-            key="document_dropdown",
-            disabled=not available_ids,
-        )
-
-    with button_column:
-
-        add_document = st.button(
-            "➕ Add",
-            type="primary",
-            use_container_width=True,
-            disabled=(
-                selected_document_id is None
-            ),
-        )
-
-
-    # --------------------------------------------------------
-    # ADD DOCUMENT
-    # --------------------------------------------------------
-
-    if add_document:
-
-        if (
-            selected_document_id
-            not in
-            st.session_state.ordered_document_ids
-        ):
-
-            st.session_state.ordered_document_ids.append(
-                selected_document_id
-            )
-
-        try:
-
-            save_ordered_selection(
-                google_docs,
-                st.session_state.ordered_document_ids,
-            )
-
-            st.session_state.document_dropdown = None
-
-            st.rerun()
-
-        except Exception as error:
-
-            st.error(
-                "Could not add the document."
-            )
-
-            st.exception(error)
-
-
-    st.divider()
-
-
-    # --------------------------------------------------------
-    # ADDED DOCUMENTS
-    # --------------------------------------------------------
-
-    st.subheader(
-        "Added documents"
-    )
-
-    number_of_documents = len(
-        st.session_state.ordered_document_ids
-    )
-
-    if number_of_documents == 0:
+    if not selected_files:
 
         st.info(
-            "No documents have been added yet."
+            "No documents have been selected yet. "
+            "Select documents in the first tab and click "
+            "'Update shared selection'."
         )
 
     else:
 
         st.write(
-            f"**{number_of_documents} documents** selected."
-        )
-
-        st.caption(
-            "Drag and drop the documents to change their "
-            "order. The first item will appear first in the "
-            "combined PDF."
+            f"**{len(selected_files)} documents** selected."
         )
 
 
         # ----------------------------------------------------
-        # CREATE UNIQUE LABELS
+        # SELECTED DOCUMENT LIST
         # ----------------------------------------------------
 
-        selected_names = [
-            document_name_by_id.get(
-                document_id,
-                "Unknown document",
-            )
-            for document_id
-            in st.session_state.ordered_document_ids
-        ]
-
-        name_counts = Counter(
-            selected_names
-        )
-
-        sortable_labels = []
-        label_to_document_id = {}
-
-        for document_id in (
-            st.session_state.ordered_document_ids
+        with st.expander(
+            "View selected documents"
         ):
 
-            document_name = document_name_by_id.get(
-                document_id,
-                "Unknown document",
-            )
+            for index, file in enumerate(
+                selected_files,
+                start=1,
+            ):
 
-            if name_counts[document_name] > 1:
-
-                display_label = (
-                    f"{document_name} "
-                    f"({document_id[-6:]})"
+                st.write(
+                    f"{index}. {file['name']}"
                 )
-
-            else:
-
-                display_label = document_name
-
-            sortable_labels.append(
-                display_label
-            )
-
-            label_to_document_id[
-                display_label
-            ] = document_id
 
 
         # ----------------------------------------------------
-        # DRAG-AND-DROP LIST
+        # COMPILE PDF
         # ----------------------------------------------------
-
-        sortable_style = """
-            .sortable-component {
-                width: 100%;
-                padding: 4px 0;
-                background-color: transparent;
-            }
-
-            .sortable-item {
-                padding: 14px 16px;
-                margin-bottom: 9px;
-                border: 1px solid #d8dce2;
-                border-radius: 9px;
-                background-color: white;
-                color: #1f2937;
-                font-size: 16px;
-                font-weight: 500;
-                cursor: grab;
-                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-            }
-
-            .sortable-item::before {
-                content: "☰  ";
-                color: #777777;
-            }
-
-            .sortable-item:active {
-                cursor: grabbing;
-            }
-        """
-
-        sorted_labels = sort_items(
-            sortable_labels,
-            direction="vertical",
-            custom_style=sortable_style,
-            key="document_sorter",
-        )
-
-
-        # ----------------------------------------------------
-        # CONVERT SORTED LABELS BACK TO DOCUMENT IDS
-        # ----------------------------------------------------
-
-        sorted_document_ids = [
-            label_to_document_id[label]
-            for label in sorted_labels
-            if label in label_to_document_id
-        ]
-
-
-        # ----------------------------------------------------
-        # SAVE CHANGED ORDER
-        # ----------------------------------------------------
-
-        if (
-            sorted_document_ids
-            != st.session_state.ordered_document_ids
-        ):
-
-            try:
-
-                save_ordered_selection(
-                    google_docs,
-                    sorted_document_ids,
-                )
-
-                st.session_state.ordered_document_ids = (
-                    sorted_document_ids
-                )
-
-                st.rerun()
-
-            except Exception as error:
-
-                st.error(
-                    "Could not save the new document order."
-                )
-
-                st.exception(error)
-
-
-        st.caption(
-            "The new order is saved automatically after "
-            "dragging."
-        )
-
-        st.divider()
-
-
-        # ----------------------------------------------------
-        # REMOVE DOCUMENT
-        # ----------------------------------------------------
-
-        st.subheader(
-            "Remove a document"
-        )
-
-        remove_dropdown_column, remove_button_column = (
-            st.columns(
-                [4, 1],
-                vertical_alignment="bottom",
-            )
-        )
-
-        with remove_dropdown_column:
-
-            document_to_remove = st.selectbox(
-                "Document to remove",
-                options=(
-                    st.session_state
-                    .ordered_document_ids
-                ),
-                index=None,
-                placeholder="Select a document...",
-                format_func=lambda document_id: (
-                    document_name_by_id.get(
-                        document_id,
-                        document_id,
-                    )
-                ),
-                key="remove_document_dropdown",
-            )
-
-        with remove_button_column:
-
-            remove_document = st.button(
-                "✕ Remove",
-                use_container_width=True,
-                disabled=(
-                    document_to_remove is None
-                ),
-            )
-
-
-        if remove_document:
-
-            updated_ids = [
-                document_id
-                for document_id
-                in st.session_state.ordered_document_ids
-                if document_id != document_to_remove
-            ]
-
-            try:
-
-                save_ordered_selection(
-                    google_docs,
-                    updated_ids,
-                )
-
-                st.session_state.ordered_document_ids = (
-                    updated_ids
-                )
-
-                st.session_state.remove_document_dropdown = (
-                    None
-                )
-
-                st.rerun()
-
-            except Exception as error:
-
-                st.error(
-                    "Could not remove the document."
-                )
-
-                st.exception(error)
-
-
-# ============================================================
-# PAGE 2: REVIEW
-# ============================================================
-
-elif selected_page == "👀 Review":
-
-    st.header(
-        "Review presentation"
-    )
-
-    selected_files = get_ordered_files(
-        google_docs,
-        st.session_state.ordered_document_ids,
-    )
-
-    if not selected_files:
-
-        st.info(
-            "No documents have been added yet. "
-            "Open 'Select documents' in the sidebar first."
-        )
-
-    else:
 
         try:
 
             with st.spinner(
-                "Creating combined PDF..."
+                "Creating combined document..."
             ):
 
                 pdf_bytes = compile_selected_pdf(
@@ -1842,7 +1516,8 @@ elif selected_page == "👀 Review":
         except Exception as error:
 
             st.error(
-                "Could not create the combined PDF."
+                "Could not export and combine "
+                "the selected documents."
             )
 
             st.exception(error)
@@ -1851,28 +1526,66 @@ elif selected_page == "👀 Review":
 
 
         # ----------------------------------------------------
-        # REVIEW ACTIONS ONLY
+        # PDF INFORMATION
         # ----------------------------------------------------
 
-        download_column, presentation_column = st.columns(
-            2
+        combined_reader = PdfReader(
+            BytesIO(pdf_bytes)
         )
 
-        with download_column:
+        st.write(
+            f"Combined PDF pages: "
+            f"**{len(combined_reader.pages)}**"
+        )
 
-            st.download_button(
-                "⬇️ Download combined PDF",
-                data=pdf_bytes,
-                file_name=OUTPUT_FILE_NAME,
-                mime="application/pdf",
-                use_container_width=True,
-            )
 
-        with presentation_column:
+        # ----------------------------------------------------
+        # DOWNLOAD
+        # ----------------------------------------------------
 
-            st.link_button(
-                "🎥 Open standalone presentation",
-                "?view=presentation",
-                type="primary",
-                use_container_width=True,
-            )
+        st.download_button(
+            "⬇️ Download combined PDF",
+            data=pdf_bytes,
+            file_name=OUTPUT_FILE_NAME,
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+
+        # ----------------------------------------------------
+        # STANDALONE PRESENTATION BUTTON
+        # ----------------------------------------------------
+
+        st.link_button(
+            "🎥 Open standalone presentation",
+            "?view=presentation",
+            type="primary",
+            use_container_width=True,
+        )
+
+        st.caption(
+            "On iPhone or iPad, open the standalone "
+            "presentation and use Safari's "
+            "Share → Add to Home Screen option."
+        )
+
+
+        # ----------------------------------------------------
+        # NORMAL PREVIEW
+        # ----------------------------------------------------
+
+        st.divider()
+
+        st.subheader(
+            "📖 Document preview"
+        )
+
+        viewer_html = create_pdf_viewer(
+            pdf_bytes
+        )
+
+        components.html(
+            viewer_html,
+            height=800,
+            scrolling=False,
+        )
