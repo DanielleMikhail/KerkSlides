@@ -146,7 +146,7 @@ else:
                 border-color: var(--ks-green-dark);
             }
             /* Fixed mobile-style bottom navigation */
-            .st-key-bottom_navigation {
+            .st-key-fixed_bottom_nav {
                 position: fixed;
                 left: 0;
                 right: 0;
@@ -162,20 +162,22 @@ else:
                 box-shadow: 0 -8px 24px rgba(17, 24, 39, .10);
                 backdrop-filter: blur(14px);
                 -webkit-backdrop-filter: blur(14px);
+                width: 100vw !important;
+                visibility: visible !important;
             }
-            .st-key-bottom_navigation > div {
+            .st-key-fixed_bottom_nav > div {
                 width: min(520px, 100%);
             }
-            .st-key-bottom_navigation [data-testid="stRadio"] > label {
+            .st-key-fixed_bottom_nav [data-testid="stRadio"] > label {
                 display: none;
             }
-            .st-key-bottom_navigation [role="radiogroup"] {
+            .st-key-fixed_bottom_nav [role="radiogroup"] {
                 display: grid;
                 grid-template-columns: repeat(2, minmax(0, 1fr));
                 gap: 8px;
                 width: 100%;
             }
-            .st-key-bottom_navigation [role="radio"] {
+            .st-key-fixed_bottom_nav [role="radio"] {
                 min-height: 48px;
                 display: flex;
                 align-items: center;
@@ -185,11 +187,11 @@ else:
                 font-weight: 700;
                 cursor: pointer;
             }
-            .st-key-bottom_navigation [role="radio"][aria-checked="true"] {
+            .st-key-fixed_bottom_nav [role="radio"][aria-checked="true"] {
                 color: var(--ks-green-dark);
                 background: #e9f9ef;
             }
-            .st-key-bottom_navigation [data-baseweb="radio"] > div:first-child {
+            .st-key-fixed_bottom_nav [data-baseweb="radio"] > div:first-child {
                 display: none;
             }
             .block-container {
@@ -530,15 +532,17 @@ with card3:
 
 st.write("")
 
-# This radio widget is visually fixed to the bottom through the
-# .st-key-bottom_navigation CSS selector above.
-active_page = st.radio(
-    "Navigation",
-    options=["🎵 Songs", "🎥 Presentation"],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="bottom_navigation",
-)
+# The keyed container is fixed to the viewport bottom by CSS.
+# Using a container is more reliable across Streamlit versions than
+# targeting the generated class of the radio widget itself.
+with st.container(key="fixed_bottom_nav"):
+    active_page = st.radio(
+        "Navigation",
+        options=["🎵 Songs", "🎥 Presentation"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="bottom_navigation_choice",
+    )
 
 
 # ============================================================
