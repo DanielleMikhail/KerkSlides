@@ -1489,53 +1489,8 @@ header_left, header_right = st.columns(
 with header_left:
     st.title("⛪ KerkSlides")
 
-    st.caption(
-        "Create, order, download, and share one synchronized "
-        "presentation."
-    )
-
 with header_right:
     st.write("")
-
-    refresh_clicked = st.button(
-        "🔄 Refresh",
-        use_container_width=True,
-        help=(
-            "Reload Google Drive and restore the most recently "
-            "saved shared presentation."
-        ),
-    )
-
-    if refresh_clicked:
-        try:
-            refreshed_order = clean_document_order(
-                get_shared_order(),
-                file_by_id,
-            )
-
-            st.session_state.draft_order = (
-                refreshed_order.copy()
-            )
-
-            st.session_state.last_saved_order = (
-                refreshed_order.copy()
-            )
-
-            st.session_state.save_message = None
-
-            refresh_sorter()
-            st.cache_data.clear()
-            st.rerun()
-
-        except Exception as error:
-            st.error(
-                "Could not refresh the presentation."
-            )
-            st.exception(error)
-
-
-st.divider()
-
 
 # ============================================================
 # MAIN LAYOUT
