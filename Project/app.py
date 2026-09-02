@@ -558,16 +558,39 @@ if active_page == "🎵 Songs":
         unsafe_allow_html=True,
     )
 
+    # Use a real text input so tapping the search field always opens the
+    # on-screen keyboard on iPhone and Android. A selectbox is a combobox and
+    # some mobile browsers do not focus its internal search input reliably.
     search_col, add_col = st.columns([5, 1], vertical_alignment="bottom")
     with search_col:
-        song_to_add = st.selectbox(
+        search_query = st.text_input(
             "Search song library",
-            options=all_ids,
-            index=None,
-            format_func=lambda doc_id: file_by_id[doc_id]["name"],
             placeholder="Type a song title...",
-            key="song_search",
+            key="song_search_query",
+            autocomplete="off",
         )
+
+    normalized_query = search_query.strip().casefold()
+    matching_ids = [
+        doc_id
+        for doc_id in all_ids
+        if normalized_query in file_by_id[doc_id]["name"].casefold()
+    ] if normalized_query else []
+
+    # Keep the chosen result in session state while the user adds songs.
+    if matching_ids:
+        if st.session_state.get("song_result_choice") not in matching_ids:
+            st.session_state.song_result_choice = matching_ids[0]
+        song_to_add = st.selectbox(
+            "Matching songs",
+            options=matching_ids[:25],
+            format_func=lambda doc_id: file_by_id[doc_id]["name"],
+            key="song_result_choice",
+            help="Choose the song to add when several titles match.",
+        )
+    else:
+        song_to_add = None
+
     with add_col:
         add_clicked = st.button(
             "＋ Add",
@@ -575,6 +598,9 @@ if active_page == "🎵 Songs":
             use_container_width=True,
             disabled=song_to_add is None,
         )
+
+    if normalized_query and not matching_ids:
+        st.caption("No songs match this search.")
 
     if add_clicked and song_to_add:
         if song_to_add not in st.session_state.ordered_song_ids:
