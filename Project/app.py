@@ -145,11 +145,55 @@ else:
                 background: var(--ks-green-dark);
                 border-color: var(--ks-green-dark);
             }
-            [data-testid="stTabs"] [data-baseweb="tab-list"] { gap: .35rem; }
-            [data-testid="stTabs"] [data-baseweb="tab"] {
-                background: white;
-                border-radius: 12px;
-                padding: .6rem 1rem;
+            /* Fixed mobile-style bottom navigation */
+            .st-key-bottom_navigation {
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                z-index: 9999;
+                display: flex;
+                justify-content: center;
+                padding: 8px max(12px, env(safe-area-inset-right))
+                         calc(8px + env(safe-area-inset-bottom))
+                         max(12px, env(safe-area-inset-left));
+                background: rgba(255, 255, 255, 0.96);
+                border-top: 1px solid var(--ks-border);
+                box-shadow: 0 -8px 24px rgba(17, 24, 39, .10);
+                backdrop-filter: blur(14px);
+                -webkit-backdrop-filter: blur(14px);
+            }
+            .st-key-bottom_navigation > div {
+                width: min(520px, 100%);
+            }
+            .st-key-bottom_navigation [data-testid="stRadio"] > label {
+                display: none;
+            }
+            .st-key-bottom_navigation [role="radiogroup"] {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 8px;
+                width: 100%;
+            }
+            .st-key-bottom_navigation [role="radio"] {
+                min-height: 48px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 13px;
+                color: var(--ks-muted);
+                font-weight: 700;
+                cursor: pointer;
+            }
+            .st-key-bottom_navigation [role="radio"][aria-checked="true"] {
+                color: var(--ks-green-dark);
+                background: #e9f9ef;
+            }
+            .st-key-bottom_navigation [data-baseweb="radio"] > div:first-child {
+                display: none;
+            }
+            .block-container {
+                padding-bottom: 7.5rem;
             }
             @media (max-width: 640px) {
                 .block-container { padding: 1rem .8rem 3rem; }
@@ -485,14 +529,23 @@ with card3:
     )
 
 st.write("")
-nav_select, nav_preview = st.tabs(["🎵 Songs", "🎥 Presentation"])
+
+# This radio widget is visually fixed to the bottom through the
+# .st-key-bottom_navigation CSS selector above.
+active_page = st.radio(
+    "Navigation",
+    options=["🎵 Songs", "🎥 Presentation"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="bottom_navigation",
+)
 
 
 # ============================================================
 # SONG SELECTION AND ORDER
 # ============================================================
 
-with nav_select:
+if active_page == "🎵 Songs":
     toolbar_left, toolbar_right = st.columns([5, 1])
     with toolbar_left:
         st.subheader("Build the song list")
@@ -542,7 +595,7 @@ with nav_select:
                 with remove_col:
                     if st.button("✕", key=f"remove_{document_id}", help="Remove", use_container_width=True):
                         st.session_state.ordered_song_ids.remove(document_id)
-                        st.session_state.song_picker = list(st.session_state.ordered_song_ids)
+                        del st.session_state["song_picker"]
                         st.rerun()
 
     st.write("")
@@ -559,7 +612,8 @@ with nav_select:
     with clear_col:
         if st.button("Clear", use_container_width=True):
             st.session_state.ordered_song_ids = []
-            st.session_state.song_picker = []
+            if "song_picker" in st.session_state:
+                del st.session_state["song_picker"]
             st.rerun()
 
 
@@ -567,7 +621,7 @@ with nav_select:
 # PRESENTATION PREVIEW
 # ============================================================
 
-with nav_preview:
+if active_page == "🎥 Presentation":
     st.subheader("Presentation")
     st.caption("This preview uses the last service order saved to Google Sheets.")
 
