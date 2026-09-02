@@ -1,10 +1,10 @@
 import base64
+import html
 from io import BytesIO
 
 import gspread
 import streamlit as st
 import streamlit.components.v1 as components
-
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from pypdf import PdfReader, PdfWriter
@@ -12,17 +12,29 @@ from streamlit_sortables import sort_items
 
 
 # ============================================================
-# APP MODE
+# CONFIGURATION
 # ============================================================
 
-# Normal application:
-# https://your-app.streamlit.app
-#
-# Standalone presentation:
-# https://your-app.streamlit.app/?view=presentation
+SOURCE_FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
+SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
+
+OUTPUT_FILE_NAME = "KerkSlides_Compiled.pdf"
+
+REQUIRED_HEADERS = [
+    "document_id",
+    "document_name",
+    "selected",
+    "display_order",
+]
+
+
+# ============================================================
+# APPLICATION MODE
+# ============================================================
 
 presentation_mode = (
-    st.query_params.get("view", "") == "presentation"
+    st.query_params.get("view", "")
+    == "presentation"
 )
 
 
@@ -43,7 +55,7 @@ st.set_page_config(
 
 
 # ============================================================
-# APPLICATION STYLING
+# STYLING
 # ============================================================
 
 if presentation_mode:
@@ -70,7 +82,7 @@ if presentation_mode:
             }
 
             .block-container {
-                max-width: 100%;
+                max-width: 100% !important;
                 padding: 0 !important;
                 margin: 0 !important;
             }
@@ -96,7 +108,7 @@ else:
             }
 
             [data-testid="stHeader"] {
-                background: rgba(255, 255, 255, 0);
+                background: transparent;
             }
 
             div[data-testid="stVerticalBlockBorderWrapper"] {
@@ -143,11 +155,6 @@ else:
             .presentation-order-item:last-child {
                 border-bottom: none;
             }
-
-            .small-muted {
-                color: #6b7280;
-                font-size: 0.85rem;
-            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -155,46 +162,28 @@ else:
 
 
 # ============================================================
-# CONFIGURATION
-# ============================================================
-
-# Folder containing the source Google Docs
-SOURCE_FOLDER_ID = "1q-5HeICSq5zBoQAEDb_PNA3iMXbgrNBn"
-
-# Google Sheet containing:
-# document_id | document_name | selected
-SPREADSHEET_ID = "1f4EFf5HeWCUtPtqYtsoooOAXpibKiuXEoWU0CHAOjWQ"
-
-# Downloaded PDF file name
-OUTPUT_FILE_NAME = "KerkSlides_Compiled.pdf"
-
-
-# ============================================================
 # VALIDATE CONFIGURATION
 # ============================================================
 
 if not SOURCE_FOLDER_ID or SOURCE_FOLDER_ID == "XX":
-    st.error(
-        "SOURCE_FOLDER_ID is not configured. Add the ID of the "
-        "Google Drive source folder."
-    )
+    st.error("SOURCE_FOLDER_ID is not configured.")
     st.stop()
 
 if not SPREADSHEET_ID or SPREADSHEET_ID == "XX":
-    st.error(
-        "SPREADSHEET_ID is not configured. Add the ID of the "
-        "Google Sheet."
-    )
+    st.error("SPREADSHEET_ID is not configured.")
     st.stop()
 
 
 # ============================================================
-# GOOGLE CREDENTIALS
+# GOOGLE CONNECTION
 # ============================================================
 
 try:
+
     credentials = (
-        service_account.Credentials.from_service_account_info(
+        service_account
+        .Credentials
+        .from_service_account_info(
             st.secrets["gcp_service_account"],
             scopes=[
                 "https://www.googleapis.com/auth/drive",
@@ -203,32 +192,27 @@ try:
         )
     )
 
-except Exception as error:
-    st.error(
-        "Could not load the Google service-account credentials."
+    drive_service = build(
+        "drive",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False,
     )
-    st.exception(error)
-    st.stop()
 
-
-# ============================================================
-# GOOGLE SERVICES
-# ============================================================
-
-drive_service = build(
-    "drive",
-    "v3",
-    credentials=credentials,
-    cache_discovery=False,
-)
-
-gc = gspread.authorize(credentials)
-
-try:
-    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
+    sheet = (
+        gspread
+        .authorize(credentials)
+        .open_by_key(SPREADSHEET_ID)
+        .sheet1
+    )
 
 except Exception as error:
-    st.error("Could not open the Google Sheet.")
+
+    st.error(
+        "Could not connect to Google Drive "
+        "or Google Sheets."
+    )
+
     st.exception(error)
     st.stop()
 
@@ -237,24 +221,12 @@ except Exception as error:
 # GOOGLE SHEET SETUP
 # ============================================================
 
-REQUIRED_HEADERS = [
-    "document_id",
-    "document_name",
-    "selected",
-    "display_order",
-]
-
-
 def ensure_sheet_headers():
-    """
-    Ensure that the first row contains the required columns.
-
-    Existing data is not cleared. Only the header row is updated.
-    """
 
     current_headers = sheet.row_values(1)
 
     if current_headers != REQUIRED_HEADERS:
+
         sheet.update(
             range_name="A1:D1",
             values=[REQUIRED_HEADERS],
@@ -266,10 +238,12 @@ try:
     ensure_sheet_headers()
 
 except Exception as error:
+
     st.error(
-        "Could not prepare the Google Sheet. Make sure the "
-        "service account has Editor access."
+        "Could not prepare the Google Sheet. "
+        "Make sure the service account has Editor access."
     )
+
     st.exception(error)
     st.stop()
 
@@ -278,49 +252,63 @@ except Exception as error:
 # GOOGLE DRIVE FUNCTIONS
 # ============================================================
 
+@st.cache_data(
+    show_spinner=False,
+    ttl=60,
+)
 def get_google_docs():
-    """
-    Retrieve all Google Docs from the configured Drive folder.
-    """
 
     files = []
     page_token = None
 
     while True:
-        result = drive_service.files().list(
-            q=(
-                f"'{SOURCE_FOLDER_ID}' in parents "
-                "and mimeType='application/vnd.google-apps.document' "
-                "and trashed=false"
-            ),
-            fields=(
-                "nextPageToken, "
-                "files(id, name, modifiedTime)"
-            ),
-            orderBy="name",
-            pageToken=page_token,
-            pageSize=1000,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-        ).execute()
 
-        files.extend(result.get("files", []))
-        page_token = result.get("nextPageToken")
+        result = (
+            drive_service
+            .files()
+            .list(
+                q=(
+                    f"'{SOURCE_FOLDER_ID}' in parents "
+                    "and mimeType="
+                    "'application/vnd.google-apps.document' "
+                    "and trashed=false"
+                ),
+                fields=(
+                    "nextPageToken, "
+                    "files(id, name, modifiedTime)"
+                ),
+                orderBy="name",
+                pageToken=page_token,
+                pageSize=1000,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+
+        files.extend(
+            result.get("files", [])
+        )
+
+        page_token = result.get(
+            "nextPageToken"
+        )
 
         if not page_token:
-            break
-
-    return files
+            return files
 
 
-def export_google_doc_as_pdf(document_id):
-    """
-    Export one Google Doc as PDF bytes.
-    """
+def export_google_doc_as_pdf(
+    document_id,
+):
 
-    request = drive_service.files().export_media(
-        fileId=document_id,
-        mimeType="application/pdf",
+    request = (
+        drive_service
+        .files()
+        .export_media(
+            fileId=document_id,
+            mimeType="application/pdf",
+        )
     )
 
     return request.execute()
@@ -330,36 +318,45 @@ def export_google_doc_as_pdf(document_id):
 # GOOGLE SHEET FUNCTIONS
 # ============================================================
 
-def convert_to_display_order(value, fallback):
-    """
-    Safely convert a Sheet display_order value to an integer.
-    """
+def convert_to_display_order(
+    value,
+    fallback,
+):
 
     try:
-        return int(float(str(value).strip()))
+        return int(
+            float(
+                str(value).strip()
+            )
+        )
 
     except (TypeError, ValueError):
         return fallback
 
 
 def get_shared_order():
-    """
-    Read selected document IDs from Google Sheets.
-
-    Selected documents are sorted using display_order.
-    """
-
-    records = sheet.get_all_records()
 
     selected_rows = []
 
-    for fallback_order, row in enumerate(records, start=1):
+    records = sheet.get_all_records()
+
+    for fallback_order, row in enumerate(
+        records,
+        start=1,
+    ):
+
         document_id = str(
-            row.get("document_id", "")
+            row.get(
+                "document_id",
+                "",
+            )
         ).strip()
 
         selected_value = str(
-            row.get("selected", "")
+            row.get(
+                "selected",
+                "",
+            )
         ).strip().upper()
 
         if not document_id:
@@ -372,9 +369,14 @@ def get_shared_order():
         }:
             continue
 
-        display_order = convert_to_display_order(
-            row.get("display_order", ""),
-            fallback_order,
+        display_order = (
+            convert_to_display_order(
+                row.get(
+                    "display_order",
+                    "",
+                ),
+                fallback_order,
+            )
         )
 
         selected_rows.append(
@@ -402,23 +404,18 @@ def save_shared_order(
     google_docs,
     ordered_document_ids,
 ):
-    """
-    Save the complete shared selection and ordering.
-
-    The update is performed as one batch. The Sheet is resized
-    when needed, the full data range is written, and unused old
-    rows are cleared.
-    """
 
     ordered_document_ids = [
         str(document_id).strip()
-        for document_id in ordered_document_ids
+        for document_id
+        in ordered_document_ids
         if str(document_id).strip()
     ]
 
-    # Remove duplicate IDs while preserving order.
     ordered_document_ids = list(
-        dict.fromkeys(ordered_document_ids)
+        dict.fromkeys(
+            ordered_document_ids
+        )
     )
 
     valid_document_ids = {
@@ -428,23 +425,34 @@ def save_shared_order(
 
     ordered_document_ids = [
         document_id
-        for document_id in ordered_document_ids
-        if document_id in valid_document_ids
+        for document_id
+        in ordered_document_ids
+        if document_id
+        in valid_document_ids
     ]
 
     order_by_id = {
-        document_id: index
-        for index, document_id in enumerate(
+        document_id: position
+        for position, document_id
+        in enumerate(
             ordered_document_ids,
             start=1,
         )
     }
 
-    output_rows = [REQUIRED_HEADERS]
+    output_rows = [
+        REQUIRED_HEADERS
+    ]
 
     for file in google_docs:
-        document_id = str(file["id"])
-        document_name = str(file["name"])
+
+        document_id = str(
+            file["id"]
+        )
+
+        document_name = str(
+            file["name"]
+        )
 
         is_selected = (
             document_id in order_by_id
@@ -454,23 +462,30 @@ def save_shared_order(
             [
                 document_id,
                 document_name,
-                "TRUE" if is_selected else "FALSE",
-                order_by_id.get(document_id, ""),
+                (
+                    "TRUE"
+                    if is_selected
+                    else "FALSE"
+                ),
+                order_by_id.get(
+                    document_id,
+                    "",
+                ),
             ]
         )
 
-    required_row_count = max(
+    required_rows = max(
         len(output_rows),
         2,
     )
 
-    if sheet.row_count < required_row_count:
+    if sheet.row_count < required_rows:
+
         sheet.add_rows(
-            required_row_count - sheet.row_count
+            required_rows
+            - sheet.row_count
         )
 
-    # Clear old data so deleted Drive documents do not remain
-    # in the Sheet below the newly written data.
     sheet.batch_clear(
         [
             f"A1:D{sheet.row_count}",
@@ -478,18 +493,20 @@ def save_shared_order(
     )
 
     sheet.update(
-        range_name=f"A1:D{len(output_rows)}",
+        range_name=(
+            f"A1:D{len(output_rows)}"
+        ),
         values=output_rows,
         value_input_option="RAW",
     )
 
-    # Read the Sheet again to verify the saved result.
     saved_order = get_shared_order()
 
     if saved_order != ordered_document_ids:
+
         raise RuntimeError(
-            "Google Sheets was updated, but the saved order "
-            "does not match the requested presentation order."
+            "The saved presentation order "
+            "could not be verified."
         )
 
     return saved_order
@@ -503,16 +520,15 @@ def clean_document_order(
     document_ids,
     file_by_id,
 ):
-    """
-    Remove invalid and duplicate document IDs while preserving
-    the original order.
-    """
 
-    cleaned_ids = []
+    output = []
     seen_ids = set()
 
     for document_id in document_ids:
-        document_id = str(document_id)
+
+        document_id = str(
+            document_id
+        )
 
         if document_id not in file_by_id:
             continue
@@ -520,61 +536,66 @@ def clean_document_order(
         if document_id in seen_ids:
             continue
 
-        cleaned_ids.append(document_id)
-        seen_ids.add(document_id)
+        output.append(
+            document_id
+        )
 
-    return cleaned_ids
+        seen_ids.add(
+            document_id
+        )
+
+    return output
 
 
 def get_files_in_order(
     google_docs,
     ordered_document_ids,
 ):
-    """
-    Match document IDs with Google Drive files while preserving
-    the chosen display order.
-    """
 
-    file_by_id = {
+    lookup = {
         str(file["id"]): file
         for file in google_docs
     }
 
     return [
-        file_by_id[str(document_id)]
-        for document_id in ordered_document_ids
-        if str(document_id) in file_by_id
+        lookup[document_id]
+        for document_id
+        in ordered_document_ids
+        if document_id in lookup
     ]
 
 
-def compile_selected_pdf(selected_files):
-    """
-    Export the selected Google Docs and combine the exported PDFs
-    in the chosen order.
-    """
+def compile_selected_pdf(
+    selected_files,
+):
 
     if not selected_files:
         return None
 
-    pdf_writer = PdfWriter()
+    writer = PdfWriter()
 
     for file in selected_files:
-        pdf_data = export_google_doc_as_pdf(
-            file["id"]
+
+        pdf_data = (
+            export_google_doc_as_pdf(
+                file["id"]
+            )
         )
 
-        pdf_reader = PdfReader(
+        reader = PdfReader(
             BytesIO(pdf_data)
         )
 
-        for page in pdf_reader.pages:
-            pdf_writer.add_page(page)
+        for page in reader.pages:
+            writer.add_page(page)
 
-    combined_pdf = BytesIO()
-    pdf_writer.write(combined_pdf)
-    combined_pdf.seek(0)
+    output = BytesIO()
 
-    return combined_pdf.getvalue()
+    writer.write(output)
+
+    output.seek(0)
+
+    return output.getvalue()
 
 
 @st.cache_data(
@@ -582,21 +603,17 @@ def compile_selected_pdf(selected_files):
     ttl=300,
 )
 def compile_pdf_for_download(
-    ordered_document_ids,
+    document_ids,
     modified_times,
 ):
-    """
-    Compile the PDF for the normal app.
-
-    modified_times is included in the cache key. This means that
-    an updated Google Doc causes a new PDF to be generated.
-    """
 
     del modified_times
 
-    selected_files = get_files_in_order(
-        google_docs,
-        ordered_document_ids,
+    selected_files = (
+        get_files_in_order(
+            google_docs,
+            document_ids,
+        )
     )
 
     return compile_selected_pdf(
@@ -605,45 +622,47 @@ def compile_pdf_for_download(
 
 
 # ============================================================
-# PDF.JS VIEWER
+# PDF.JS PRESENTATION VIEWER
 # ============================================================
 
-def create_pdf_viewer(pdf_bytes):
-    """
-    Create a standalone PDF.js presentation viewer.
-    """
+def create_pdf_viewer(
+    pdf_bytes,
+):
 
     pdf_base64 = base64.b64encode(
         pdf_bytes
-    ).decode("utf-8")
+    ).decode("ascii")
 
-    viewer_html = """
+    return f"""
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
+
+    <meta charset="UTF-8">
+
     <meta
         name="viewport"
         content="
             width=device-width,
-            initial-scale=1.0,
-            maximum-scale=5.0,
-            user-scalable=yes,
+            initial-scale=1,
             viewport-fit=cover
         "
     >
 
     <script
-        src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js">
-    </script>
+        src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"
+    ></script>
 
     <style>
-        * {
+
+        * {{
             box-sizing: border-box;
-        }
+        }}
 
         html,
-        body {
+        body {{
             width: 100%;
             height: 100%;
             margin: 0;
@@ -651,40 +670,33 @@ def create_pdf_viewer(pdf_bytes):
             overflow: hidden;
             background: #202124;
             font-family:
-                -apple-system,
-                BlinkMacSystemFont,
-                "Segoe UI",
+                Arial,
                 sans-serif;
-        }
+        }}
 
-        #viewer {
+        #viewer {{
             position: fixed;
             inset: 0;
             width: 100vw;
             height: 100vh;
-            height: 100dvh;
             display: flex;
             flex-direction: column;
             background: #202124;
-        }
+        }}
 
-        #toolbar {
+        #toolbar {{
             flex: 0 0 auto;
             min-height: 54px;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 6px;
-            padding:
-                max(6px, env(safe-area-inset-top))
-                max(8px, env(safe-area-inset-right))
-                6px
-                max(8px, env(safe-area-inset-left));
+            gap: 7px;
+            padding: 7px;
             background: #292b2d;
             z-index: 20;
-        }
+        }}
 
-        button {
+        button {{
             min-width: 42px;
             min-height: 38px;
             border: none;
@@ -693,109 +705,99 @@ def create_pdf_viewer(pdf_bytes):
             background: white;
             color: #202124;
             font-size: 14px;
-            font-weight: 600;
+            font-weight: 700;
             cursor: pointer;
-            touch-action: manipulation;
-        }
+        }}
 
-        button:active {
-            transform: scale(0.96);
+        button:hover {{
             background: #e8eaed;
-        }
+        }}
 
-        button:disabled {
+        button:active {{
+            transform: scale(0.96);
+        }}
+
+        button:disabled {{
             opacity: 0.4;
             cursor: default;
-        }
+        }}
 
-        #page-info {
-            min-width: 72px;
+        #page-info {{
+            min-width: 80px;
             color: white;
             text-align: center;
-            font-size: 14px;
             white-space: nowrap;
-        }
+        }}
 
-        #pdf-container {
+        #stage {{
             flex: 1 1 auto;
             min-height: 0;
             width: 100%;
             overflow: auto;
-            -webkit-overflow-scrolling: touch;
-            overscroll-behavior: contain;
-            padding:
-                8px
-                max(5px, env(safe-area-inset-right))
-                max(8px, env(safe-area-inset-bottom))
-                max(5px, env(safe-area-inset-left));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px;
             background: #525659;
-            text-align: center;
-        }
+        }}
 
-        #pdf-canvas {
+        #pdf-canvas {{
             display: none;
-            margin: 0 auto;
+            margin: auto;
             background: white;
             box-shadow:
                 0 3px 14px
                 rgba(0, 0, 0, 0.45);
-        }
+        }}
 
-        #loading {
-            padding: 40px 20px;
+        #loading {{
             color: white;
+            padding: 30px;
             text-align: center;
-            font-size: 16px;
-        }
+        }}
 
-        #error {
+        #error {{
             display: none;
-            margin: 20px;
+            color: white;
             padding: 15px;
             border-radius: 8px;
             background: #b3261e;
-            color: white;
-            text-align: center;
-        }
+        }}
 
-        #viewer:fullscreen,
-        #viewer:-webkit-full-screen {
-            width: 100vw;
-            height: 100vh;
-        }
+        @media (max-width: 600px) {{
 
-        @media (max-width: 600px) {
-            #toolbar {
-                min-height: 50px;
+            #toolbar {{
                 gap: 4px;
-            }
+                padding: 6px 3px;
+            }}
 
-            button {
-                min-width: 37px;
+            button {{
+                min-width: 36px;
                 min-height: 36px;
                 padding: 7px 8px;
                 font-size: 13px;
-            }
+            }}
 
-            #page-info {
+            #page-info {{
                 min-width: 58px;
                 font-size: 12px;
-            }
+            }}
 
-            #pdf-container {
-                padding-top: 5px;
-            }
-        }
+        }}
+
     </style>
+
 </head>
 
 <body>
+
     <div id="viewer">
+
         <div id="toolbar">
+
             <button
                 id="previous-button"
-                onclick="previousPage()"
-                aria-label="Previous page"
+                title="Previous slide"
             >
                 ◀
             </button>
@@ -806,42 +808,43 @@ def create_pdf_viewer(pdf_bytes):
 
             <button
                 id="next-button"
-                onclick="nextPage()"
-                aria-label="Next page"
+                title="Next slide"
             >
                 ▶
             </button>
 
             <button
-                onclick="zoomOut()"
-                aria-label="Zoom out"
+                id="zoom-out-button"
+                title="Zoom out"
             >
                 −
             </button>
 
             <button
-                onclick="fitPage()"
-                aria-label="Fit page"
+                id="fit-button"
+                title="Fit slide"
             >
                 Fit
             </button>
 
             <button
-                onclick="zoomIn()"
-                aria-label="Zoom in"
+                id="zoom-in-button"
+                title="Zoom in"
             >
                 +
             </button>
 
             <button
-                onclick="toggleFullscreen()"
-                aria-label="Fullscreen"
+                id="fullscreen-button"
+                title="Fullscreen"
             >
                 ⛶
             </button>
+
         </div>
 
-        <div id="pdf-container">
+        <div id="stage">
+
             <div id="loading">
                 Loading presentation...
             </div>
@@ -850,476 +853,685 @@ def create_pdf_viewer(pdf_bytes):
                 The presentation could not be loaded.
             </div>
 
-            <canvas id="pdf-canvas"></canvas>
+            <canvas id="pdf-canvas">
+            </canvas>
+
         </div>
+
     </div>
 
     <script>
+
         pdfjsLib.GlobalWorkerOptions.workerSrc =
             "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
-        const pdfData = Uint8Array.from(
-            window.atob("__PDF_BASE64__"),
-            character => character.charCodeAt(0)
-        );
 
-        let pdfDocument = null;
-        let currentPage = 1;
-        let zoomFactor = 1.0;
-        let fitScale = 1.0;
-        let rendering = false;
-        let pendingPage = null;
+        const rawPdfData =
+            window.atob(
+                "{pdf_base64}"
+            );
+
+
+        const pdfData =
+            new Uint8Array(
+                rawPdfData.length
+            );
+
+
+        for (
+            let index = 0;
+            index < rawPdfData.length;
+            index++
+        ) {{
+            pdfData[index] =
+                rawPdfData.charCodeAt(
+                    index
+                );
+        }}
+
 
         const viewer =
-            document.getElementById("viewer");
+            document.getElementById(
+                "viewer"
+            );
 
-        const container =
-            document.getElementById("pdf-container");
+
+        const stage =
+            document.getElementById(
+                "stage"
+            );
+
 
         const canvas =
-            document.getElementById("pdf-canvas");
+            document.getElementById(
+                "pdf-canvas"
+            );
+
 
         const context =
-            canvas.getContext("2d");
+            canvas.getContext(
+                "2d"
+            );
+
 
         const pageInfo =
-            document.getElementById("page-info");
+            document.getElementById(
+                "page-info"
+            );
+
 
         const previousButton =
-            document.getElementById("previous-button");
+            document.getElementById(
+                "previous-button"
+            );
+
 
         const nextButton =
-            document.getElementById("next-button");
+            document.getElementById(
+                "next-button"
+            );
+
 
         const loadingMessage =
-            document.getElementById("loading");
+            document.getElementById(
+                "loading"
+            );
+
 
         const errorMessage =
-            document.getElementById("error");
+            document.getElementById(
+                "error"
+            );
 
 
-        async function loadPDF() {
-            try {
-                const loadingTask =
-                    pdfjsLib.getDocument({
-                        data: pdfData
-                    });
+        let pdfDocument = null;
 
-                pdfDocument =
-                    await loadingTask.promise;
+        let currentPage = 1;
 
-                loadingMessage.style.display =
-                    "none";
+        let fitScale = 1;
 
-                canvas.style.display =
-                    "block";
+        let zoomFactor = 1;
 
-                await renderPage(
-                    currentPage,
-                    true
-                );
+        let renderTask = null;
 
-            } catch (error) {
-                console.error(error);
-
-                loadingMessage.style.display =
-                    "none";
-
-                errorMessage.style.display =
-                    "block";
-
-                pageInfo.textContent =
-                    "Error";
-            }
-        }
+        let renderVersion = 0;
 
 
-        async function calculateFitScale(page) {
-            const unscaledViewport =
-                page.getViewport({
+        async function calculateFitScale(
+            page
+        ) {{
+
+            const viewport =
+                page.getViewport({{
                     scale: 1
-                });
+                }});
+
 
             const availableWidth =
                 Math.max(
-                    container.clientWidth - 16,
+                    stage.clientWidth - 16,
                     100
                 );
+
 
             const availableHeight =
                 Math.max(
-                    container.clientHeight - 16,
+                    stage.clientHeight - 16,
                     100
                 );
 
-            const widthScale =
-                availableWidth /
-                unscaledViewport.width;
-
-            const heightScale =
-                availableHeight /
-                unscaledViewport.height;
 
             return Math.min(
-                widthScale,
-                heightScale
+                availableWidth
+                    / viewport.width,
+                availableHeight
+                    / viewport.height
             );
-        }
+
+        }}
 
 
         async function renderPage(
-            pageNumber,
             recalculateFit = false
-        ) {
-            if (!pdfDocument) {
+        ) {{
+
+            if (!pdfDocument) {{
                 return;
-            }
+            }}
 
-            if (rendering) {
-                pendingPage = pageNumber;
-                return;
-            }
 
-            rendering = true;
+            const currentRenderVersion =
+                ++renderVersion;
 
-            try {
+
+            if (renderTask) {{
+
+                try {{
+                    renderTask.cancel();
+                }}
+
+                catch (error) {{
+                    console.log(error);
+                }}
+
+            }}
+
+
+            try {{
+
                 const page =
                     await pdfDocument.getPage(
-                        pageNumber
+                        currentPage
                     );
 
-                if (recalculateFit) {
-                    fitScale =
-                        await calculateFitScale(page);
-                }
 
-                const renderScale =
-                    fitScale * zoomFactor;
+                if (
+                    currentRenderVersion
+                    !== renderVersion
+                ) {{
+                    return;
+                }}
+
+
+                if (recalculateFit) {{
+
+                    fitScale =
+                        await calculateFitScale(
+                            page
+                        );
+
+                }}
+
 
                 const viewport =
-                    page.getViewport({
-                        scale: renderScale
-                    });
+                    page.getViewport({{
+                        scale:
+                            fitScale
+                            * zoomFactor
+                    }});
+
 
                 const outputScale =
-                    window.devicePixelRatio || 1;
+                    window.devicePixelRatio
+                    || 1;
+
 
                 canvas.width =
                     Math.floor(
-                        viewport.width *
-                        outputScale
+                        viewport.width
+                        * outputScale
                     );
+
 
                 canvas.height =
                     Math.floor(
-                        viewport.height *
-                        outputScale
+                        viewport.height
+                        * outputScale
                     );
+
 
                 canvas.style.width =
                     Math.floor(
                         viewport.width
-                    ) + "px";
+                    )
+                    + "px";
+
 
                 canvas.style.height =
                     Math.floor(
                         viewport.height
-                    ) + "px";
+                    )
+                    + "px";
+
 
                 const transform =
-                    outputScale !== 1
-                        ? [
+                    outputScale === 1
+                        ? null
+                        : [
                             outputScale,
                             0,
                             0,
                             outputScale,
                             0,
                             0
-                        ]
-                        : null;
+                        ];
 
-                await page.render({
-                    canvasContext: context,
-                    viewport: viewport,
-                    transform: transform
-                }).promise;
 
-                currentPage = pageNumber;
+                renderTask =
+                    page.render({{
+                        canvasContext:
+                            context,
+                        viewport:
+                            viewport,
+                        transform:
+                            transform
+                    }});
+
+
+                await renderTask.promise;
+
+
+                if (
+                    currentRenderVersion
+                    !== renderVersion
+                ) {{
+                    return;
+                }}
+
+
+                canvas.style.display =
+                    "block";
+
+
+                loadingMessage.style.display =
+                    "none";
+
+
+                errorMessage.style.display =
+                    "none";
+
 
                 pageInfo.textContent =
-                    currentPage +
-                    " / " +
-                    pdfDocument.numPages;
+                    currentPage
+                    + " / "
+                    + pdfDocument.numPages;
+
 
                 previousButton.disabled =
                     currentPage <= 1;
 
+
                 nextButton.disabled =
-                    currentPage >=
-                    pdfDocument.numPages;
-
-                container.scrollTop = 0;
-                container.scrollLeft = 0;
-
-            } catch (error) {
-                console.error(error);
-                errorMessage.style.display = "block";
-
-            } finally {
-                rendering = false;
-
-                if (pendingPage !== null) {
-                    const pageToRender =
-                        pendingPage;
-
-                    pendingPage = null;
-
-                    renderPage(pageToRender);
-                }
-            }
-        }
+                    currentPage
+                    >= pdfDocument.numPages;
 
 
-        function previousPage() {
-            if (
-                !pdfDocument ||
-                currentPage <= 1
-            ) {
-                return;
-            }
+                stage.scrollTop = 0;
+                stage.scrollLeft = 0;
 
-            renderPage(
-                currentPage - 1
-            );
-        }
+            }}
 
+            catch (error) {{
 
-        function nextPage() {
-            if (
-                !pdfDocument ||
-                currentPage >= pdfDocument.numPages
-            ) {
-                return;
-            }
-
-            renderPage(
-                currentPage + 1
-            );
-        }
-
-
-        function zoomIn() {
-            zoomFactor =
-                Math.min(
-                    zoomFactor + 0.2,
-                    3.0
-                );
-
-            renderPage(currentPage);
-        }
-
-
-        function zoomOut() {
-            zoomFactor =
-                Math.max(
-                    zoomFactor - 0.2,
-                    0.4
-                );
-
-            renderPage(currentPage);
-        }
-
-
-        function fitPage() {
-            zoomFactor = 1.0;
-
-            renderPage(
-                currentPage,
-                true
-            );
-        }
-
-
-        async function toggleFullscreen() {
-            try {
                 if (
-                    document.fullscreenElement ||
-                    document.webkitFullscreenElement
-                ) {
-                    if (document.exitFullscreen) {
-                        await document.exitFullscreen();
-
-                    } else if (
-                        document.webkitExitFullscreen
-                    ) {
-                        document.webkitExitFullscreen();
-                    }
-
-                    return;
-                }
-
-                if (viewer.requestFullscreen) {
-                    await viewer.requestFullscreen();
-
-                } else if (
-                    viewer.webkitRequestFullscreen
-                ) {
-                    viewer.webkitRequestFullscreen();
-                }
-
-            } catch (error) {
-                console.log(
-                    "Fullscreen is not available:",
                     error
+                    && error.name
+                    === "RenderingCancelledException"
+                ) {{
+                    return;
+                }}
+
+
+                console.error(error);
+
+
+                loadingMessage.style.display =
+                    "none";
+
+
+                errorMessage.style.display =
+                    "block";
+
+
+                pageInfo.textContent =
+                    "Error";
+
+            }}
+
+            finally {{
+                renderTask = null;
+            }}
+
+        }}
+
+
+        function movePage(
+            difference
+        ) {{
+
+            if (!pdfDocument) {{
+                return;
+            }}
+
+
+            const targetPage =
+                Math.min(
+                    Math.max(
+                        currentPage
+                        + difference,
+                        1
+                    ),
+                    pdfDocument.numPages
                 );
-            }
-        }
+
+
+            if (
+                targetPage
+                === currentPage
+            ) {{
+                return;
+            }}
+
+
+            currentPage =
+                targetPage;
+
+
+            renderPage(false);
+
+        }}
+
+
+        previousButton.onclick =
+            function() {{
+                movePage(-1);
+            }};
+
+
+        nextButton.onclick =
+            function() {{
+                movePage(1);
+            }};
+
+
+        document
+            .getElementById(
+                "zoom-in-button"
+            )
+            .onclick =
+                function() {{
+
+                    zoomFactor =
+                        Math.min(
+                            zoomFactor
+                            + 0.2,
+                            3
+                        );
+
+
+                    renderPage(false);
+
+                }};
+
+
+        document
+            .getElementById(
+                "zoom-out-button"
+            )
+            .onclick =
+                function() {{
+
+                    zoomFactor =
+                        Math.max(
+                            zoomFactor
+                            - 0.2,
+                            0.4
+                        );
+
+
+                    renderPage(false);
+
+                }};
+
+
+        document
+            .getElementById(
+                "fit-button"
+            )
+            .onclick =
+                function() {{
+
+                    zoomFactor = 1;
+
+                    renderPage(true);
+
+                }};
+
+
+        document
+            .getElementById(
+                "fullscreen-button"
+            )
+            .onclick =
+                async function() {{
+
+                    try {{
+
+                        if (
+                            document.fullscreenElement
+                        ) {{
+
+                            await document
+                                .exitFullscreen();
+
+                        }}
+
+                        else {{
+
+                            await viewer
+                                .requestFullscreen();
+
+                        }}
+
+                    }}
+
+                    catch (error) {{
+                        console.error(error);
+                    }}
+
+                }};
 
 
         document.addEventListener(
             "keydown",
-            function(event) {
-                if (
-                    event.key === "ArrowLeft" ||
-                    event.key === "PageUp"
-                ) {
-                    previousPage();
-                }
+            function(event) {{
 
                 if (
-                    event.key === "ArrowRight" ||
-                    event.key === "PageDown" ||
-                    event.key === " "
-                ) {
+                    event.key
+                    === "ArrowRight"
+                    || event.key
+                    === "PageDown"
+                    || event.key
+                    === " "
+                ) {{
+
                     event.preventDefault();
-                    nextPage();
-                }
+
+                    movePage(1);
+
+                }}
+
+
+                if (
+                    event.key
+                    === "ArrowLeft"
+                    || event.key
+                    === "PageUp"
+                ) {{
+
+                    event.preventDefault();
+
+                    movePage(-1);
+
+                }}
+
             }
         );
 
 
         let touchStartX = null;
-        let touchStartY = null;
 
 
-        container.addEventListener(
+        stage.addEventListener(
             "touchstart",
-            function(event) {
-                if (event.touches.length !== 1) {
-                    return;
-                }
+            function(event) {{
 
-                touchStartX =
-                    event.touches[0].clientX;
+                if (
+                    event.touches.length
+                    === 1
+                ) {{
 
-                touchStartY =
-                    event.touches[0].clientY;
-            },
-            {
+                    touchStartX =
+                        event
+                        .touches[0]
+                        .clientX;
+
+                }}
+
+            }},
+            {{
                 passive: true
-            }
+            }}
         );
 
 
-        container.addEventListener(
+        stage.addEventListener(
             "touchend",
-            function(event) {
+            function(event) {{
+
                 if (
-                    touchStartX === null ||
-                    touchStartY === null ||
-                    event.changedTouches.length !== 1
-                ) {
+                    touchStartX === null
+                    || event
+                        .changedTouches
+                        .length !== 1
+                ) {{
                     return;
-                }
+                }}
+
 
                 const touchEndX =
-                    event.changedTouches[0].clientX;
+                    event
+                    .changedTouches[0]
+                    .clientX;
 
-                const touchEndY =
-                    event.changedTouches[0].clientY;
 
-                const differenceX =
-                    touchEndX - touchStartX;
+                const difference =
+                    touchEndX
+                    - touchStartX;
 
-                const differenceY =
-                    touchEndY - touchStartY;
 
                 if (
-                    Math.abs(differenceX) > 70 &&
-                    Math.abs(differenceX) >
-                        Math.abs(differenceY)
-                ) {
-                    if (differenceX < 0) {
-                        nextPage();
-                    } else {
-                        previousPage();
-                    }
-                }
+                    Math.abs(
+                        difference
+                    ) > 70
+                ) {{
+
+                    movePage(
+                        difference < 0
+                            ? 1
+                            : -1
+                    );
+
+                }}
+
 
                 touchStartX = null;
-                touchStartY = null;
-            },
-            {
+
+            }},
+            {{
                 passive: true
-            }
+            }}
         );
-
-
-        function refitCurrentPage() {
-            setTimeout(
-                function() {
-                    if (pdfDocument) {
-                        zoomFactor = 1.0;
-
-                        renderPage(
-                            currentPage,
-                            true
-                        );
-                    }
-                },
-                250
-            );
-        }
 
 
         let resizeTimer = null;
 
 
+        function refitPage() {{
+
+            clearTimeout(
+                resizeTimer
+            );
+
+
+            resizeTimer =
+                setTimeout(
+                    function() {{
+
+                        zoomFactor = 1;
+
+                        renderPage(true);
+
+                    }},
+                    200
+                );
+
+        }}
+
+
         window.addEventListener(
             "resize",
-            function() {
-                clearTimeout(resizeTimer);
-
-                resizeTimer = setTimeout(
-                    refitCurrentPage,
-                    250
-                );
-            }
+            refitPage
         );
 
 
         document.addEventListener(
             "fullscreenchange",
-            refitCurrentPage
+            function() {{
+
+                setTimeout(
+                    function() {{
+
+                        zoomFactor = 1;
+
+                        renderPage(true);
+
+                    }},
+                    150
+                );
+
+            }
         );
 
 
-        document.addEventListener(
-            "webkitfullscreenchange",
-            refitCurrentPage
-        );
+        async function loadPresentation() {{
+
+            try {{
+
+                const loadingTask =
+                    pdfjsLib.getDocument({{
+                        data:
+                            pdfData
+                    }});
 
 
-        loadPDF();
+                pdfDocument =
+                    await loadingTask.promise;
+
+
+                await renderPage(true);
+
+            }}
+
+            catch (error) {{
+
+                console.error(error);
+
+
+                loadingMessage.style.display =
+                    "none";
+
+
+                errorMessage.style.display =
+                    "block";
+
+
+                pageInfo.textContent =
+                    "Error";
+
+            }}
+
+        }}
+
+
+        loadPresentation();
+
     </script>
+
 </body>
+
 </html>
 """
-
-    return viewer_html.replace(
-        "__PDF_BASE64__",
-        pdf_base64,
-    )
 
 
 # ============================================================
@@ -1327,12 +1539,16 @@ def create_pdf_viewer(pdf_bytes):
 # ============================================================
 
 try:
+
     google_docs = get_google_docs()
 
 except Exception as error:
+
     st.error(
-        "Could not load the Google Docs from Google Drive."
+        "Could not load Google Docs "
+        "from the configured Drive folder."
     )
+
     st.exception(error)
     st.stop()
 
@@ -1350,24 +1566,34 @@ file_by_id = {
 if presentation_mode:
 
     try:
-        shared_order = clean_document_order(
-            get_shared_order(),
-            file_by_id,
+
+        shared_order = (
+            clean_document_order(
+                get_shared_order(),
+                file_by_id,
+            )
         )
 
-        selected_files = get_files_in_order(
-            google_docs,
-            shared_order,
+        selected_files = (
+            get_files_in_order(
+                google_docs,
+                shared_order,
+            )
         )
 
     except Exception as error:
+
         st.error(
-            "Could not load the shared presentation."
+            "Could not load the "
+            "shared presentation."
         )
+
         st.exception(error)
         st.stop()
 
+
     if not selected_files:
+
         st.markdown(
             """
             <div style="
@@ -1377,9 +1603,10 @@ if presentation_mode:
                 font-family: Arial, sans-serif;
             ">
                 <h2>No documents selected</h2>
+
                 <p>
-                    Return to KerkSlides and add documents
-                    to the shared presentation first.
+                    Return to KerkSlides and save a
+                    shared presentation first.
                 </p>
             </div>
             """,
@@ -1388,34 +1615,45 @@ if presentation_mode:
 
         st.stop()
 
+
     try:
+
         with st.spinner(
             "Creating presentation..."
         ):
-            pdf_bytes = compile_selected_pdf(
-                selected_files
+
+            pdf_bytes = (
+                compile_selected_pdf(
+                    selected_files
+                )
             )
 
     except Exception as error:
+
         st.error(
-            "Could not compile the presentation."
+            "Could not compile "
+            "the presentation."
         )
+
         st.exception(error)
         st.stop()
 
+
     if not pdf_bytes:
+
         st.error(
-            "The presentation PDF could not be created."
+            "The presentation PDF "
+            "could not be created."
         )
+
         st.stop()
 
-    viewer_html = create_pdf_viewer(
-        pdf_bytes
-    )
 
     components.html(
-        viewer_html,
-        height=1400,
+        create_pdf_viewer(
+            pdf_bytes
+        ),
+        height=900,
         scrolling=False,
     )
 
@@ -1423,136 +1661,219 @@ if presentation_mode:
 
 
 # ============================================================
-# INITIALIZE NORMAL APP STATE
+# NORMAL APPLICATION STATE
 # ============================================================
 
 try:
-    shared_order = clean_document_order(
-        get_shared_order(),
-        file_by_id,
+
+    shared_order = (
+        clean_document_order(
+            get_shared_order(),
+            file_by_id,
+        )
     )
 
 except Exception as error:
+
     st.error(
-        "Could not read the selection from Google Sheets."
+        "Could not read the saved "
+        "presentation from Google Sheets."
     )
+
     st.exception(error)
     st.stop()
 
 
 if "draft_order" not in st.session_state:
+
     st.session_state.draft_order = (
         shared_order.copy()
     )
 
 
-if "sorter_version" not in st.session_state:
-    st.session_state.sorter_version = 0
-
-
 if "last_saved_order" not in st.session_state:
+
     st.session_state.last_saved_order = (
         shared_order.copy()
     )
 
 
+if "sorter_version" not in st.session_state:
+
+    st.session_state.sorter_version = 0
+
+
 if "save_message" not in st.session_state:
+
     st.session_state.save_message = None
 
 
-# Keep the current order valid if a Drive document was deleted.
-st.session_state.draft_order = clean_document_order(
-    st.session_state.draft_order,
-    file_by_id,
+st.session_state.draft_order = (
+    clean_document_order(
+        st.session_state.draft_order,
+        file_by_id,
+    )
 )
 
 
 def refresh_sorter():
-    """
-    Force the sortable component to reload its item collection.
-
-    This is necessary after adding, removing, refreshing, or
-    resetting documents.
-    """
 
     st.session_state.sorter_version += 1
 
 
 # ============================================================
-# PAGE HEADER
+# HEADER
 # ============================================================
 
-header_left, header_right = st.columns(
-    [5, 1]
+header_left, header_right = (
+    st.columns(
+        [5, 1]
+    )
 )
 
+
 with header_left:
-    st.title("⛪ KerkSlides")
+
+    st.title(
+        "⛪ KerkSlides"
+    )
+
+    st.caption(
+        "Create, order, download, and share "
+        "one synchronized presentation."
+    )
+
 
 with header_right:
+
     st.write("")
+
+    refresh_clicked = st.button(
+        "🔄 Refresh",
+        use_container_width=True,
+    )
+
+
+    if refresh_clicked:
+
+        try:
+
+            get_google_docs.clear()
+            st.cache_data.clear()
+
+            refreshed_order = (
+                clean_document_order(
+                    get_shared_order(),
+                    file_by_id,
+                )
+            )
+
+            st.session_state.draft_order = (
+                refreshed_order.copy()
+            )
+
+            st.session_state.last_saved_order = (
+                refreshed_order.copy()
+            )
+
+            st.session_state.save_message = None
+
+            refresh_sorter()
+
+            st.rerun()
+
+        except Exception as error:
+
+            st.error(
+                "Could not refresh "
+                "the presentation."
+            )
+
+            st.exception(error)
+
+
+st.divider()
+
 
 # ============================================================
 # MAIN LAYOUT
 # ============================================================
 
-workspace_column, presentation_column = st.columns(
-    [2.1, 1],
-    gap="large",
+workspace_column, presentation_column = (
+    st.columns(
+        [2.1, 1],
+        gap="large",
+    )
 )
 
 
 # ============================================================
-# LEFT SIDE: DOCUMENT WORKSPACE
+# LEFT SIDE
 # ============================================================
 
 with workspace_column:
 
-    with st.container(border=True):
+    with st.container(
+        border=True
+    ):
 
-        st.subheader("Build presentation")
-
-        st.caption(
-            "Choose a document, add it, and drag the selected "
-            "documents into the correct order."
+        st.subheader(
+            "Build presentation"
         )
 
-        # ----------------------------------------------------
-        # ADD DOCUMENT
-        # ----------------------------------------------------
+        st.caption(
+            "Add documents and drag them "
+            "into the correct order."
+        )
 
-        available_files = [
-            file
+
+        available_document_ids = [
+
+            str(file["id"])
+
             for file in google_docs
+
             if str(file["id"])
             not in st.session_state.draft_order
+
         ]
 
-        if available_files:
 
-            # Include the ID in the internal option so duplicate
-            # Google Doc names remain supported.
-            available_options = [
-                str(file["id"])
-                for file in available_files
-            ]
+        if available_document_ids:
 
-            dropdown_column, add_column = st.columns(
-                [4, 1]
+            dropdown_column, add_column = (
+                st.columns(
+                    [4, 1]
+                )
             )
+
 
             with dropdown_column:
 
-                selected_document_id = st.selectbox(
-                    "Document",
-                    options=available_options,
-                    format_func=lambda document_id: (
-                        file_by_id[document_id]["name"]
-                    ),
-                    label_visibility="collapsed",
-                    placeholder="Choose a document",
-                    key="add_document_dropdown",
+                selected_document_id = (
+                    st.selectbox(
+                        "Document",
+                        options=(
+                            available_document_ids
+                        ),
+                        format_func=(
+                            lambda document_id:
+                            file_by_id[
+                                document_id
+                            ]["name"]
+                        ),
+                        label_visibility=(
+                            "collapsed"
+                        ),
+                        placeholder=(
+                            "Choose a document"
+                        ),
+                        key=(
+                            "add_document_dropdown"
+                        ),
+                    )
                 )
+
 
             with add_column:
 
@@ -1561,16 +1882,18 @@ with workspace_column:
                     use_container_width=True,
                 )
 
-            if add_clicked and selected_document_id:
 
-                selected_document_id = str(
-                    selected_document_id
-                )
+            if (
+                add_clicked
+                and selected_document_id
+            ):
 
                 if (
                     selected_document_id
-                    not in st.session_state.draft_order
+                    not in
+                    st.session_state.draft_order
                 ):
+
                     st.session_state.draft_order.append(
                         selected_document_id
                     )
@@ -1578,121 +1901,145 @@ with workspace_column:
                     st.session_state.save_message = None
 
                     refresh_sorter()
+
                     st.rerun()
 
+
         else:
+
             st.info(
-                "All available Google Docs have already "
-                "been added."
+                "All available Google Docs "
+                "have already been added."
             )
+
 
         st.divider()
 
+
         # ----------------------------------------------------
-        # ORDER DOCUMENTS
+        # SORT DOCUMENTS
         # ----------------------------------------------------
 
-        st.markdown("#### Presentation order")
+        st.markdown(
+            "#### Presentation order"
+        )
+
 
         if not st.session_state.draft_order:
 
             st.info(
-                "No documents have been added yet. "
-                "Use the dropdown above to add a document."
+                "No documents have been added yet."
             )
+
 
         else:
 
-            st.caption(
-                "Drag the cards up or down to change "
-                "the presentation order."
-            )
-
-            sortable_items = []
-
-            for document_id in st.session_state.draft_order:
-                file = file_by_id.get(document_id)
-
-                if not file:
-                    continue
-
-                # The document ID makes every sortable item unique,
-                # even when multiple documents have the same name.
-                sortable_items.append(
-                    {
-                        "header": file["name"],
-                        "document_id": document_id,
-                    }
-                )
-
-            # streamlit-sortables displays simple strings most
-            # reliably. Use unique numbered labels and map them
-            # back to IDs after dragging.
             sortable_labels = []
             label_to_id = {}
 
-            for position, item in enumerate(
-                sortable_items,
+
+            for position, document_id in enumerate(
+                st.session_state.draft_order,
                 start=1,
             ):
-                label = (
-                    f"{position}. {item['header']} "
-                    f"[{item['document_id']}]"
+
+                document_name = (
+                    file_by_id[
+                        document_id
+                    ]["name"]
                 )
 
-                sortable_labels.append(label)
-                label_to_id[label] = item["document_id"]
+                label = (
+                    f"{position}. "
+                    f"{document_name} "
+                    f"[{document_id}]"
+                )
 
-            reordered_labels = sort_items(
-                sortable_labels,
-                direction="vertical",
-                key=(
-                    "presentation_order_sorter_"
-                    f"{st.session_state.sorter_version}"
-                ),
+                sortable_labels.append(
+                    label
+                )
+
+                label_to_id[label] = (
+                    document_id
+                )
+
+
+            reordered_labels = (
+                sort_items(
+                    sortable_labels,
+                    direction="vertical",
+                    key=(
+                        "presentation_order_sorter_"
+                        f"{st.session_state.sorter_version}"
+                    ),
+                )
             )
 
+
             reordered_ids = [
+
                 label_to_id[label]
+
                 for label in reordered_labels
+
                 if label in label_to_id
+
             ]
+
 
             if (
                 reordered_ids
                 and reordered_ids
                 != st.session_state.draft_order
             ):
-                st.session_state.draft_order = reordered_ids
+
+                st.session_state.draft_order = (
+                    reordered_ids
+                )
+
                 st.session_state.save_message = None
 
-        # ----------------------------------------------------
-        # REMOVE DOCUMENT
-        # ----------------------------------------------------
 
-        if st.session_state.draft_order:
+            # ------------------------------------------------
+            # REMOVE DOCUMENT
+            # ------------------------------------------------
 
-            st.markdown("##### Remove documents")
-
-            remove_options = (
-                st.session_state.draft_order.copy()
+            st.markdown(
+                "##### Remove document"
             )
 
-            remove_column, remove_button_column = st.columns(
-                [4, 1]
+
+            remove_column, remove_button_column = (
+                st.columns(
+                    [4, 1]
+                )
             )
+
 
             with remove_column:
 
-                document_to_remove_id = st.selectbox(
-                    "Remove document",
-                    options=remove_options,
-                    format_func=lambda document_id: (
-                        file_by_id[document_id]["name"]
-                    ),
-                    label_visibility="collapsed",
-                    key="remove_document_dropdown",
+                document_to_remove = (
+                    st.selectbox(
+                        "Remove document",
+                        options=(
+                            st.session_state
+                            .draft_order
+                        ),
+                        format_func=(
+                            lambda document_id:
+                            file_by_id[
+                                document_id
+                            ]["name"]
+                        ),
+                        label_visibility=(
+                            "collapsed"
+                        ),
+                        key=(
+                            "remove_document_dropdown"
+                        ),
+                    )
                 )
+
 
             with remove_button_column:
 
@@ -1701,22 +2048,30 @@ with workspace_column:
                     use_container_width=True,
                 )
 
+
             if (
                 remove_clicked
-                and document_to_remove_id
+                and document_to_remove
             ):
+
                 st.session_state.draft_order = [
+
                     document_id
+
                     for document_id
                     in st.session_state.draft_order
+
                     if document_id
-                    != str(document_to_remove_id)
+                    != document_to_remove
+
                 ]
 
                 st.session_state.save_message = None
 
                 refresh_sorter()
+
                 st.rerun()
+
 
         # ----------------------------------------------------
         # SAVE AND RESET
@@ -1724,9 +2079,13 @@ with workspace_column:
 
         st.divider()
 
-        save_column, reset_column = st.columns(
-            [2, 1]
+
+        save_column, reset_column = (
+            st.columns(
+                [2, 1]
+            )
         )
+
 
         with save_column:
 
@@ -1736,125 +2095,153 @@ with workspace_column:
                 use_container_width=True,
             )
 
+
         with reset_column:
 
             reset_clicked = st.button(
                 "↩ Reset",
                 use_container_width=True,
-                help=(
-                    "Discard local changes and restore the "
-                    "currently saved shared presentation."
-                ),
             )
+
 
         if save_clicked:
 
             try:
-                current_order = clean_document_order(
-                    st.session_state.draft_order,
-                    file_by_id,
+
+                current_order = (
+                    clean_document_order(
+                        st.session_state.draft_order,
+                        file_by_id,
+                    )
                 )
+
 
                 with st.spinner(
                     "Saving shared presentation..."
                 ):
-                    verified_saved_order = save_shared_order(
-                        google_docs,
-                        current_order,
+
+                    saved_order = (
+                        save_shared_order(
+                            google_docs,
+                            current_order,
+                        )
                     )
 
+
                 st.session_state.draft_order = (
-                    verified_saved_order.copy()
+                    saved_order.copy()
                 )
 
                 st.session_state.last_saved_order = (
-                    verified_saved_order.copy()
+                    saved_order.copy()
                 )
 
                 st.session_state.save_message = (
-                    "Shared presentation saved successfully. "
-                    "The standalone presentation now uses this "
-                    "document selection and order."
+                    "Shared presentation "
+                    "saved successfully."
                 )
 
                 st.cache_data.clear()
+
                 refresh_sorter()
+
                 st.rerun()
 
+
             except Exception as error:
+
                 st.error(
-                    "Could not save the shared presentation."
+                    "Could not save the "
+                    "shared presentation."
                 )
+
                 st.exception(error)
+
 
         if reset_clicked:
 
             try:
-                current_shared_order = clean_document_order(
-                    get_shared_order(),
-                    file_by_id,
+
+                restored_order = (
+                    clean_document_order(
+                        get_shared_order(),
+                        file_by_id,
+                    )
                 )
 
                 st.session_state.draft_order = (
-                    current_shared_order.copy()
+                    restored_order.copy()
                 )
 
                 st.session_state.last_saved_order = (
-                    current_shared_order.copy()
+                    restored_order.copy()
                 )
 
                 st.session_state.save_message = None
 
                 refresh_sorter()
+
                 st.rerun()
 
+
             except Exception as error:
+
                 st.error(
-                    "Could not restore the shared presentation."
+                    "Could not restore the "
+                    "shared presentation."
                 )
+
                 st.exception(error)
 
+
         if st.session_state.save_message:
+
             st.success(
                 st.session_state.save_message
             )
 
 
 # ============================================================
-# RIGHT SIDE: PRESENTATION ORDER AND ACTIONS
+# RIGHT SIDE
 # ============================================================
 
 with presentation_column:
 
-    with st.container(border=True):
+    with st.container(
+        border=True
+    ):
 
-        st.subheader("Presentation order")
-
-        draft_files = get_files_in_order(
-            google_docs,
-            st.session_state.draft_order,
+        st.subheader(
+            "Presentation order"
         )
 
-        if not draft_files:
 
-            st.info(
-                "No documents have been added."
+        draft_files = (
+            get_files_in_order(
+                google_docs,
+                st.session_state.draft_order,
             )
+        )
 
-        else:
+
+        if draft_files:
 
             order_items_html = "".join(
+
                 (
                     '<div class="presentation-order-item">'
                     f"<strong>{index}.</strong> "
-                    f"{file['name']}"
+                    f"{html.escape(file['name'])}"
                     "</div>"
                 )
+
                 for index, file in enumerate(
                     draft_files,
                     start=1,
                 )
+
             )
+
 
             st.markdown(
                 (
@@ -1865,57 +2252,78 @@ with presentation_column:
                 unsafe_allow_html=True,
             )
 
+
+        else:
+
+            st.info(
+                "No documents have been added."
+            )
+
+
         # ----------------------------------------------------
-        # DOWNLOAD CURRENT WORKSPACE PDF
+        # DOWNLOAD PDF
         # ----------------------------------------------------
 
         if draft_files:
 
             try:
-                ordered_document_ids = tuple(
+
+                document_ids = tuple(
                     st.session_state.draft_order
                 )
 
+
                 modified_times = tuple(
+
                     str(
-                        file_by_id[document_id].get(
+                        file_by_id[
+                            document_id
+                        ].get(
                             "modifiedTime",
                             "",
                         )
                     )
+
                     for document_id
-                    in ordered_document_ids
-                    if document_id in file_by_id
+                    in document_ids
+
                 )
+
 
                 with st.spinner(
                     "Preparing download..."
                 ):
-                    download_pdf_bytes = (
+
+                    download_pdf = (
                         compile_pdf_for_download(
-                            ordered_document_ids,
+                            document_ids,
                             modified_times,
                         )
                     )
 
+
                 st.download_button(
                     "⬇️ Download combined PDF",
-                    data=download_pdf_bytes,
+                    data=download_pdf,
                     file_name=OUTPUT_FILE_NAME,
                     mime="application/pdf",
                     use_container_width=True,
                 )
 
+
             except Exception as error:
 
                 st.error(
-                    "The combined PDF could not be prepared."
+                    "The combined PDF "
+                    "could not be prepared."
                 )
 
                 with st.expander(
                     "View technical error"
                 ):
+
                     st.exception(error)
+
 
         else:
 
@@ -1928,29 +2336,32 @@ with presentation_column:
                 use_container_width=True,
             )
 
+
         # ----------------------------------------------------
-        # OPEN SAVED STANDALONE PRESENTATION
+        # SHOW PRESENTATION
         # ----------------------------------------------------
 
-        saved_presentation_available = bool(
-            st.session_state.last_saved_order
-        )
-
-        if saved_presentation_available:
+        if st.session_state.last_saved_order:
 
             st.markdown(
                 """
                 ?view=presentation
-                    🎥 Open standalone presentation
+                    🎥 Show presentation
                 </a>
                 """,
                 unsafe_allow_html=True,
             )
 
+            st.caption(
+                "Opens the last saved shared "
+                "presentation in a new tab."
+            )
+
+
         else:
 
             st.button(
-                "🎥 Open standalone presentation",
+                "🎥 Show presentation",
                 disabled=True,
                 use_container_width=True,
             )
